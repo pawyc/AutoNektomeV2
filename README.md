@@ -1,6 +1,6 @@
 # AutoNektome 🚀
 
-![Версия](https://img.shields.io/badge/версия-4.1-brightgreen) ![Лицензия](https://img.shields.io/badge/лицензия-MIT-blue) ![Совместимость](https://img.shields.io/badge/сайт-nekto.me/audiochat-orange)
+![Версия](https://img.shields.io/badge/версия-4.2-brightgreen) ![Лицензия](https://img.shields.io/badge/лицензия-MIT-blue) ![Совместимость](https://img.shields.io/badge/сайт-nekto.me/audiochat-orange)
 
 **AutoNektome** — пользовательский скрипт для [nekto.me/audiochat](https://nekto.me/audiochat), который автоматизирует общение, добавляет голосовое управление, автогромкость, изменение голоса и кастомизацию интерфейса в одном меню.
 
