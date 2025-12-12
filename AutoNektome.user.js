@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AutoNektome
 // @namespace    http://tampermonkey.net/
-// @version      4.1
+// @version      4.2
 // @description  Автоматический переход с настройками звука, голосовым управлением, улучшенной автогромкостью, изменением голоса и выбором тем для nekto.me audiochat
 // @author       @paracosm17
 // @match        https://nekto.me/audiochat
@@ -15,8 +15,8 @@
     'use strict';
 
     // ### Настройка звуков уведомлений
-    const START_CONVERSATION_SOUND_URL = 'https://zvukogram.com/mp3/p2/2862/skayp-zvuk-soobschenie-poluchil-message-received-23007.mp3'; // Ссылка на звук начала разговора
-    const END_CONVERSATION_SOUND_URL = 'https://zvukogram.com//mp3/cats/791/enderman_teleport.mp3'; // Ссылка на звук окончания разговора
+    const START_CONVERSATION_SOUND_URL = 'https://zvukogram.com/mp3/22/skype-sound-message-received-message-received.mp3'; // Ссылка на звук начала разговора
+    const END_CONVERSATION_SOUND_URL = 'https://www.myinstants.com/media/sounds/teleport1_Cw1ot9l.mp3'; // Ссылка на звук окончания разговора
     const START_SOUND_VOLUME = 0.4; // Громкость звука начала разговора (0.0 - 1.0)
     const END_SOUND_VOLUME = 0.3; // Громкость звука окончания разговора (0.0 - 1.0)
 
@@ -300,20 +300,44 @@
     // ### Функции авторежима
     function checkAndClickButton() {
         if (!isAutoModeEnabled) return;
-        const button = document.querySelector('button.btn.btn-lg.go-scan-button');
+
+        // Новый интерфейс: экран после завершения разговора
+        const finishedScreen = document.querySelector('.callScreen.callFinished');
+        let button = null;
+        if (finishedScreen) {
+            button = finishedScreen.querySelector('button.callScreen__findBtn.btn.green.filled');
+        }
+
+        // Старый интерфейс — на всякий случай оставляем
+        if (!button) {
+            button = document.querySelector('button.btn.btn-lg.go-scan-button');
+        }
+
         if (button) {
             button.click();
         }
     }
 
     function skipConversation() {
-        const stopButton = document.querySelector('button.btn.btn-lg.stop-talk-button');
+        // Новый интерфейс
+        let stopButton = document.querySelector('button.callScreen__cancelCallBtn.btn.danger2.cancelCallBtnNoMess');
+
+        // Старый интерфейс — fallback
+        if (!stopButton) {
+            stopButton = document.querySelector('button.btn.btn-lg.stop-talk-button');
+        }
+
         if (stopButton) {
             stopButton.click();
+
             setTimeout(() => {
                 const confirmButton = document.querySelector('button.swal2-confirm.swal2-styled');
                 if (confirmButton) {
+                    // Если по-прежнему есть подтверждение через SweetAlert
                     confirmButton.click();
+                    playNotificationOnEnd();
+                } else {
+                    // Если подтверждения нет — просто считаем разговор завершённым
                     playNotificationOnEnd();
                 }
             }, 500);
@@ -628,8 +652,10 @@
         if (conversationTimer) clearInterval(conversationTimer);
         currentConversationStart = Date.now();
         playNotificationOnStart();
+
         conversationTimer = setInterval(() => {
-            const timerElement = document.querySelector('.timer-label');
+            const timerElement = document.querySelector('.callScreen__time, .timer-label');
+            // Если таймер исчез или вдруг сбросился в 00:00 — считаем, что разговор закончился/перезапустился
             if (!timerElement || timerElement.textContent === '00:00') {
                 stopConversationTimer();
             }
@@ -1119,15 +1145,26 @@
                     const audio = document.querySelector('audio#audioStream');
                     if (audio && audio.srcObject && settings.autoVolume) setupAutoVolume(audio.srcObject);
 
-                    const timerElement = document.querySelector('.timer-label');
+                    // Новый + старый вариант селектора таймера
+                    const timerElement = document.querySelector('.callScreen__time, .timer-label');
+
                     if (timerElement && timerElement.textContent === '00:00' && !conversationTimer) {
+                        // Таймер появился и стоит на 00:00 — стартуем отсчёт разговора
                         startConversationTimer();
                     }
+
                     if (!timerElement && conversationTimer) {
+                        // Таймер исчез (например, экран завершения разговора) — завершаем
                         stopConversationTimer();
                     }
 
-                    const stopButton = document.querySelector('button.btn.btn-lg.stop-talk-button');
+                    // Новый селектор кнопки "Завершить"
+                    let stopButton = document.querySelector('button.callScreen__cancelCallBtn.btn.danger2.cancelCallBtnNoMess');
+                    // Старый вариант — на всякий случай
+                    if (!stopButton) {
+                        stopButton = document.querySelector('button.btn.btn-lg.stop-talk-button');
+                    }
+
                     if (stopButton && !stopButton.dataset.listenerAdded) {
                         stopButton.addEventListener('click', () => {
                             setTimeout(() => {
