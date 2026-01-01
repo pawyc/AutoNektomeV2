@@ -1,14 +1,14 @@
 // ==UserScript==
-// @name         AutoPawycMe
+// @name         AutoNektome
 // @namespace    http://tampermonkey.net/
-// @version      4.4
+// @version      4.5
 // @description  Автоматический переход с настройками звука, голосовым управлением, улучшенной автогромкостью, изменением голоса и выбором тем для nekto.me audiochat
-// @author       @pawyc
+// @author       @paracosm17
 // @match        https://nekto.me/audiochat
 // @grant        none
 // @license      MIT
-// @downloadURL https://update.greasyfork.org/scripts/498724/AutoNektome.user.js
-// @updateURL https://update.greasyfork.org/scripts/498724/AutoNektome.meta.js
+// @downloadURL https://greasyfork.org/ru/scripts/561078-autopawycme
+// @updateURL https://greasyfork.org/ru/scripts/561078-autopawycme
 // ==/UserScript==
 
 (function () {
@@ -28,7 +28,7 @@
     autoVol: {
       target: 50,
       interval: 200,
-      smoothing: 0.8, // Коэффициент сглаживания (0-1)
+      smoothing: 0.8,
     },
     themes: {
       Original: null,
@@ -36,13 +36,21 @@
         "https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/githubdark.css",
     },
     voiceCommands: {
-      skip: ["скип", "skip", "скиф", "скипнуть", "кефир"],
-      stop: ["завершить", "остановить", "закончить", "кумыс"],
-      start: ["чат", "старт", "поехали"],
+      skip: ["скип", "skip", "скиф", "далее", "некст"],
+      stop: ["завершить", "остановить", "закончить", "стоп"],
+      start: [
+        "чат",
+        "старт",
+        "поехали",
+        "начни",
+        "начать",
+        "поиск",
+        "ищи",
+        "найди",
+      ],
     },
   };
 
-  // Настройки (State)
   const settings = {
     enableLoopback: false,
     gainValue: 1.5,
@@ -55,7 +63,7 @@
     voiceControl: false,
     conversationCount: 0,
     selectedTheme: "Original",
-    // Загрузка
+    isCollapsed: false, // Состояние свернутости меню
     ...JSON.parse(localStorage.getItem("AutoNektomeSettings") || "{}"),
   };
 
@@ -64,17 +72,17 @@
   }
 
   // ==========================================
-  // AUDIO ENGINE (SINGLETON)
+  // AUDIO ENGINE (PRO PROCESSING)
   // ==========================================
   const AudioEngine = {
     ctx: null,
     workletLoaded: false,
     pitchNode: null,
     gainNode: null,
-    analyser: null,
+    compressor: null,
+    highPass: null,
     micSource: null,
 
-    // Получение или создание контекста (ОДИН НА ВЕСЬ СКРИПТ)
     async getContext() {
       if (!this.ctx) {
         this.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -85,7 +93,6 @@
       return this.ctx;
     },
 
-    // Инициализация Worklet (один раз)
     async initWorklet() {
       if (this.workletLoaded) return;
       const ctx = await this.getContext();
@@ -114,51 +121,69 @@
       this.workletLoaded = true;
     },
 
-    // Обработка микрофона
+    // Цепочка обработки: Mic -> HighPass -> Compressor -> Pitch -> Loopback/Out
     async processMicrophone(stream) {
       const ctx = await this.getContext();
 
-      // Очистка старых узлов
       if (this.micSource) this.micSource.disconnect();
-
       this.micSource = ctx.createMediaStreamSource(stream);
-      let outputNode = this.micSource;
+      let currentNode = this.micSource;
 
-      // 1. Pitch Shift
+      // 1. High-Pass Filter (Убирает гул)
+      if (!this.highPass) {
+        this.highPass = ctx.createBiquadFilter();
+        this.highPass.type = "highpass";
+        this.highPass.frequency.value = 85; // Срезаем все ниже 85Hz
+      }
+      currentNode.connect(this.highPass);
+      currentNode = this.highPass;
+
+      // 2. Dynamics Compressor (Выравнивает громкость - эффект студии)
+      if (!this.compressor) {
+        this.compressor = ctx.createDynamicsCompressor();
+        this.compressor.threshold.value = -24; // Начинаем жать с -24dB
+        this.compressor.knee.value = 30; // Плавный вход
+        this.compressor.ratio.value = 12; // Сильное сжатие
+        this.compressor.attack.value = 0.003; // Быстрая атака
+        this.compressor.release.value = 0.25; // Плавный релиз
+      }
+      currentNode.connect(this.compressor);
+      currentNode = this.compressor;
+
+      // 3. Pitch Shift
       if (settings.voicePitch && settings.pitchLevel > 0) {
         await this.initWorklet();
         this.pitchNode = new AudioWorkletNode(ctx, "pitch-shift-processor");
         this.pitchNode.port.postMessage(1.0 - settings.pitchLevel);
 
-        // Фильтр для сглаживания
-        const filter = ctx.createBiquadFilter();
-        filter.type = "lowshelf";
-        filter.frequency.value = 300;
-        filter.gain.value = 5;
+        // Lowshelf для добавления "тела" пониженному голосу
+        const bassBoost = ctx.createBiquadFilter();
+        bassBoost.type = "lowshelf";
+        bassBoost.frequency.value = 200;
+        bassBoost.gain.value = 3;
 
-        this.micSource.connect(this.pitchNode);
-        this.pitchNode.connect(filter);
-        outputNode = filter;
+        currentNode.connect(this.pitchNode);
+        this.pitchNode.connect(bassBoost);
+        currentNode = bassBoost;
       }
 
-      // 2. Loopback (Самопрослушивание)
+      // 4. Loopback (Самопрослушивание)
       if (settings.enableLoopback) {
         if (this.gainNode) this.gainNode.disconnect();
         this.gainNode = ctx.createGain();
         this.gainNode.gain.value = settings.gainValue;
-        outputNode.connect(this.gainNode);
+        currentNode.connect(this.gainNode);
         this.gainNode.connect(ctx.destination);
       } else if (this.gainNode) {
-        this.gainNode.disconnect(); // Отключаем, если выключено
+        this.gainNode.disconnect();
       }
 
-      // 3. Вывод в стрим (для сайта)
+      // 5. Вывод
       const destination = ctx.createMediaStreamDestination();
-      outputNode.connect(destination);
+      currentNode.connect(destination);
       return destination.stream;
     },
 
-    // Обновление параметров без пересоздания графа
     updateParams() {
       if (this.gainNode) this.gainNode.gain.value = settings.gainValue;
       if (this.pitchNode)
@@ -167,14 +192,13 @@
   };
 
   // ==========================================
-  // ЛОГИКА АВТОГРОМКОСТИ (SMOOTH)
+  // ЛОГИКА АВТОГРОМКОСТИ (ВХОДЯЩАЯ)
   // ==========================================
   let autoVolInterval = null;
 
   function startAutoVolume(stream) {
     if (!settings.autoVolume || !stream) return;
 
-    // Используем ТОТ ЖЕ глобальный контекст
     AudioEngine.getContext().then((ctx) => {
       const source = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
@@ -199,16 +223,12 @@
         const rms = Math.sqrt(sum / data.length);
         const currentVol = Math.min(1, rms * 10) * 100;
 
-        // Экспоненциальное сглаживание
         smoothVol =
           smoothVol * CONFIG.autoVol.smoothing +
           currentVol * (1 - CONFIG.autoVol.smoothing);
 
-        // Логика понижения громкости
         if (smoothVol > CONFIG.autoVol.target + 15) {
-          if (audioEl.volume > 0.2) audioEl.volume -= 0.02; // Плавно снижаем
-        } else if (smoothVol < CONFIG.autoVol.target - 10) {
-          // if (audioEl.volume < 1.0) audioEl.volume += 0.01; // Плавно повышаем (опционально)
+          if (audioEl.volume > 0.2) audioEl.volume -= 0.02;
         }
       }, CONFIG.autoVol.interval);
     });
@@ -226,18 +246,44 @@
                 background: rgba(13, 17, 23, 0.75);
                 backdrop-filter: blur(16px) saturate(180%);
                 -webkit-backdrop-filter: blur(16px) saturate(180%);
-                padding: 16px; border-radius: 14px;
+                padding: 0; border-radius: 14px;
                 box-shadow: 0 10px 40px rgba(0,0,0,0.6);
                 border: 1px solid rgba(88, 166, 255, 0.15);
                 width: 260px; color: #c9d1d9; font-family: -apple-system, system-ui, sans-serif;
                 transition: opacity 0.3s, transform 0.3s;
+                overflow: hidden;
+            }
+            .an-header {
+                padding: 12px 16px;
+                display: flex; justify-content: space-between; align-items: center;
+                border-bottom: 1px solid rgba(255,255,255,0.1);
+                background: rgba(255,255,255,0.03);
+                cursor: pointer;
             }
             .an-title {
-                text-align: center; font-size: 14px; font-weight: 800; color: #58a6ff;
-                text-transform: uppercase; letter-spacing: 1px; margin-bottom: 15px;
-                padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1);
+                font-size: 14px; font-weight: 800; color: #58a6ff;
+                text-transform: uppercase; letter-spacing: 1px;
             }
-            .an-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+            .an-collapse-btn {
+                background: none; border: none; color: #8b949e; font-size: 16px; cursor: pointer;
+                transition: transform 0.3s;
+            }
+            .an-minimized .an-collapse-btn { transform: rotate(-180deg); }
+
+            .an-content {
+                padding: 16px;
+                transition: max-height 0.4s cubic-bezier(0, 1, 0, 1), opacity 0.4s ease;
+                max-height: 800px;
+                opacity: 1;
+            }
+            .an-minimized .an-content {
+                max-height: 0;
+                opacity: 0;
+                padding: 0 16px;
+                pointer-events: none;
+            }
+
+            .an-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
             .an-btn-group { display: flex; gap: 10px; justify-content: center; margin-bottom: 15px; }
             .an-btn {
                 width: 42px; height: 42px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1);
@@ -256,10 +302,10 @@
             input:checked + .an-slider:before { transform: translateX(16px); }
 
             .an-label { font-size: 13px; font-weight: 500; }
-            .an-sub { padding: 8px; background: rgba(0,0,0,0.2); border-radius: 8px; margin-top: -5px; margin-bottom: 10px; }
-            .an-range { width: 100%; height: 4px; background: #30363d; border-radius: 2px; appearance: none; outline: none; }
+            .an-sub { padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px; margin-top: -5px; margin-bottom: 12px; }
+            .an-range { width: 100%; height: 4px; background: #30363d; border-radius: 2px; appearance: none; outline: none; display: block; }
             .an-range::-webkit-slider-thumb { appearance: none; width: 12px; height: 12px; background: #58a6ff; border-radius: 50%; cursor: pointer; }
-            .an-select { width: 100%; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; padding: 4px; border-radius: 6px; }
+            .an-select { width: 100%; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; padding: 6px; border-radius: 6px; outline: none; }
         `;
 
     const style = document.createElement("style");
@@ -268,9 +314,25 @@
 
     const ui = document.createElement("div");
     ui.id = "an-ui";
+    if (settings.isCollapsed) ui.classList.add("an-minimized");
 
     // Header
-    ui.innerHTML = `<div class="an-title">AutoNektome v4.4</div>`;
+    const header = document.createElement("div");
+    header.className = "an-header";
+    header.innerHTML = `
+            <span class="an-title">AutoNektome v4.5</span>
+            <button class="an-collapse-btn">▼</button>
+        `;
+    header.onclick = () => {
+      ui.classList.toggle("an-minimized");
+      settings.isCollapsed = ui.classList.contains("an-minimized");
+      saveSettings();
+    };
+    ui.appendChild(header);
+
+    // Content Wrapper
+    const content = document.createElement("div");
+    content.className = "an-content";
 
     // Mic/Headphone Controls
     const btnGroup = document.createElement("div");
@@ -300,9 +362,8 @@
     }
 
     btnGroup.append(micBtn, headBtn);
-    ui.append(btnGroup);
+    content.append(btnGroup);
 
-    // Helper for Toggles
     function addToggle(label, key, callback) {
       const row = document.createElement("div");
       row.className = "an-row";
@@ -315,7 +376,6 @@
       input.type = "checkbox";
       input.checked = key ? settings[key] : false;
 
-      // Special handling for Automode which is global var
       if (key === "autoMode") input.checked = isAutoModeEnabled;
 
       input.onchange = (e) => {
@@ -332,33 +392,24 @@
 
       labelEl.append(input, slider);
       row.append(labelEl);
-      ui.append(row);
+      content.append(row);
       return row;
     }
 
     addToggle("Авторежим", "autoMode");
 
     addToggle("Самопрослушивание", "enableLoopback", (val) => {
-      AudioEngine.updateParams(); // Триггер обновления графа
-      // Реальное применение происходит внутри processMicrophone,
-      // но мы можем заставить пересобрать граф, если стрим активен
-      if (globalStream)
+      if (globalMicStreamOrig)
         AudioEngine.processMicrophone(globalMicStreamOrig).then(
           (s) => (globalStream = s),
         );
-      // ^ Упрощено, на самом деле проще просто переключить флаг,
-      // AudioEngine сам проверит его при следующем create.
-      // Для мгновенного эффекта:
-      if (globalMicStreamOrig)
-        AudioEngine.processMicrophone(globalMicStreamOrig);
-
       lbDiv.style.display = val ? "block" : "none";
     });
 
     const lbDiv = document.createElement("div");
     lbDiv.className = "an-sub";
     lbDiv.style.display = settings.enableLoopback ? "block" : "none";
-    lbDiv.innerHTML = `<div style="font-size:11px; margin-bottom:5px;">Громкость</div>`;
+    lbDiv.innerHTML = `<div style="font-size:11px; margin-bottom:8px; color:#8b949e;">Громкость</div>`;
     const lbSlider = document.createElement("input");
     lbSlider.type = "range";
     lbSlider.className = "an-range";
@@ -372,10 +423,9 @@
       AudioEngine.updateParams();
     };
     lbDiv.append(lbSlider);
-    ui.append(lbDiv);
+    content.append(lbDiv);
 
     addToggle("Изменение голоса", "voicePitch", (val) => {
-      // Аналогично, лучше перезапросить обработку
       if (globalMicStreamOrig)
         AudioEngine.processMicrophone(globalMicStreamOrig).then(
           (s) => (globalStream = s),
@@ -386,7 +436,7 @@
     const pDiv = document.createElement("div");
     pDiv.className = "an-sub";
     pDiv.style.display = settings.voicePitch ? "block" : "none";
-    pDiv.innerHTML = `<div style="font-size:11px; margin-bottom:5px;">Тон (ниже - влево)</div>`;
+    pDiv.innerHTML = `<div style="font-size:11px; margin-bottom:8px; color:#8b949e;">Тон (ниже - влево)</div>`;
     const pSlider = document.createElement("input");
     pSlider.type = "range";
     pSlider.className = "an-range";
@@ -400,7 +450,7 @@
       AudioEngine.updateParams();
     };
     pDiv.append(pSlider);
-    ui.append(pDiv);
+    content.append(pDiv);
 
     addToggle("Автогромкость собеседника", "autoVolume");
 
@@ -411,7 +461,6 @@
       } else if (recognition) recognition.stop();
     });
 
-    // Theme
     const themeRow = document.createElement("div");
     themeRow.className = "an-row";
     themeRow.style.marginTop = "15px";
@@ -426,8 +475,9 @@
     }
     sel.onchange = (e) => applyTheme(e.target.value);
     themeRow.append(sel);
-    ui.append(themeRow);
+    content.append(themeRow);
 
+    ui.appendChild(content);
     document.body.append(ui);
   }
 
@@ -438,12 +488,11 @@
   let isMicMuted = false;
   let isHeadphonesMuted = false;
   let globalStream = null;
-  let globalMicStreamOrig = null; // Храним оригинал для переобработки
+  let globalMicStreamOrig = null;
   let recognition = null;
   let conversationTimer = null;
   let currentThemeStyle = null;
 
-  // Звуки
   const soundStart = new Audio(CONFIG.sounds.start);
   soundStart.volume = CONFIG.sounds.startVol;
   const soundEnd = new Audio(CONFIG.sounds.end);
@@ -466,7 +515,6 @@
     saveSettings();
   }
 
-  // Перехват GUM (GetUserMedia)
   const origGUM = navigator.mediaDevices.getUserMedia.bind(
     navigator.mediaDevices,
   );
@@ -481,13 +529,10 @@
     }
     try {
       const stream = await origGUM(constraints);
-      globalMicStreamOrig = stream; // Сохраняем "сырой" поток
+      globalMicStreamOrig = stream;
       const processed = await AudioEngine.processMicrophone(stream);
       globalStream = processed;
-
-      // Восстанавливаем мут если был
       if (isMicMuted) toggleMicState();
-
       return processed;
     } catch (e) {
       console.error("Mic Error", e);
@@ -506,30 +551,21 @@
     if (isHeadphonesMuted && !isMicMuted) {
       isMicMuted = true;
       toggleMicState();
-    } // Auto mute mic
+    }
   }
 
-  // Автоматизация
   let obsTimer;
   const observer = new MutationObserver(() => {
     if (obsTimer) clearTimeout(obsTimer);
     obsTimer = setTimeout(() => {
-      // Клик "Искать"
-      if (isAutoModeEnabled) {
-        const btn = document.querySelector(
-          "button.callScreen__findBtn, button.go-scan-button, .scan-button",
-        );
-        if (btn && btn.offsetParent) btn.click();
-      }
+      if (isAutoModeEnabled) clickSearch();
 
-      // Аудио элемент
       const audio = document.querySelector("audio#audioStream");
       if (audio && !audio.dataset.inited) {
         audio.dataset.inited = "true";
         if (audio.srcObject) startAutoVolume(audio.srcObject);
       }
 
-      // Таймер (простой детектор начала/конца)
       const timer = document.querySelector(".callScreen__time, .timer-label");
       if (timer && timer.textContent === "00:00" && !conversationTimer) {
         soundStart.play().catch(() => {});
@@ -540,10 +576,17 @@
         settings.conversationCount++;
         saveSettings();
       }
-    }, 150); // Debounce
+    }, 150);
   });
 
-  // Voice
+  // Unified click helper
+  function clickSearch() {
+    const btn = document.querySelector(
+      "button.callScreen__findBtn, button.go-scan-button, .scan-button",
+    );
+    if (btn && btn.offsetParent) btn.click();
+  }
+
   function initSpeech() {
     if (!("webkitSpeechRecognition" in window)) return;
     recognition = new webkitSpeechRecognition();
@@ -551,13 +594,18 @@
     recognition.lang = "ru-RU";
     recognition.onresult = (e) => {
       const t = e.results[e.results.length - 1][0].transcript.toLowerCase();
+      // Skip
       if (CONFIG.voiceCommands.skip.some((w) => t.includes(w))) skip();
+      // Stop
       if (CONFIG.voiceCommands.stop.some((w) => t.includes(w))) {
         isAutoModeEnabled = false;
         skip();
       }
+      // Start
       if (CONFIG.voiceCommands.start.some((w) => t.includes(w))) {
         isAutoModeEnabled = true;
+        // Force click immediately if auto mode loop hasn't caught it yet
+        clickSearch();
       }
     };
     recognition.onend = () => {
@@ -578,7 +626,6 @@
     }
   }
 
-  // Animation
   function initParticles() {
     const c = document.createElement("canvas");
     c.style.cssText =
@@ -641,7 +688,6 @@
     loop();
   }
 
-  // Init
   function init() {
     applyTheme(settings.selectedTheme);
     createUI();
@@ -652,7 +698,6 @@
       recognition.start();
     }
 
-    // Block connect sound
     const origPlay = HTMLAudioElement.prototype.play;
     HTMLAudioElement.prototype.play = function () {
       if (this.src?.includes("connect.mp3")) return Promise.resolve();
