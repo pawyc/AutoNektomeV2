@@ -40,11 +40,7 @@
     // ### Темы
     const THEMES = {
         'Original': null,
-        'Dracula': 'https://raw.githubusercontent.com/paracosm17/AutoNektome/refs/heads/main/dracula.css',
-        'GitHub Dark': 'https://raw.githubusercontent.com/paracosm17/AutoNektome/refs/heads/main/githubdark.css',
-        'One Dark': 'https://raw.githubusercontent.com/paracosm17/AutoNektome/refs/heads/main/onedark.css',
-        'Monokai': 'https://raw.githubusercontent.com/paracosm17/AutoNektome/refs/heads/main/monokai.css',
-        'Nord': 'https://raw.githubusercontent.com/paracosm17/AutoNektome/refs/heads/main/nord.css'
+        'GitHub Dark': 'https://raw.githubusercontent.com/paracosm17/AutoNektome/refs/heads/main/githubdark.css'
     };
 
     // ### Настройки из localStorage
@@ -821,87 +817,106 @@
     function createSettingsUI() {
         const container = document.createElement('div');
         container.id = 'settings-container';
-        container.style.position = 'fixed';
-        container.style.top = '20px';
-        container.style.right = '20px';
-        container.style.zIndex = '9999';
-        container.style.background = 'linear-gradient(135deg, #2b2b2b, #1f1f1f)';
-        container.style.padding = '20px';
-        container.style.borderRadius = '15px';
-        container.style.boxShadow = '0 5px 20px rgba(0, 0, 0, 0.7)';
-        container.style.border = '2px solid #ff007a';
-        container.style.width = '250px';
-        container.style.color = '#fff';
-        container.style.fontFamily = "'Segoe UI', Arial, sans-serif";
-        container.style.transition = 'transform 0.3s ease';
+        // Glassmorphism style
+        container.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+            background: rgba(13, 17, 23, 0.7); /* GitHub Dark bg with opacity */
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(88, 166, 255, 0.1);
+            width: 280px;
+            color: #c9d1d9;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+        `;
 
         const header = document.createElement('h3');
-        header.textContent = 'Настройки';
-        header.style.margin = '0 0 15px';
-        header.style.fontSize = '20px';
-        header.style.color = '#ff007a';
-        header.style.textAlign = 'center';
-        header.style.textTransform = 'uppercase';
-        header.style.letterSpacing = '2px';
+        header.textContent = 'AutoNektome';
+        header.style.cssText = `
+            margin: 0 0 20px;
+            font-size: 18px;
+            color: #58a6ff; /* GitHub Blue */
+            text-align: center;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            border-bottom: 1px solid rgba(48, 54, 61, 0.7);
+            padding-bottom: 10px;
+        `;
         container.appendChild(header);
 
         container.appendChild(createConversationCounter());
 
+        // Audio Controls (Icons)
         const audioControls = document.createElement('div');
-        audioControls.style.display = 'flex';
-        audioControls.style.gap = '10px';
-        audioControls.style.marginBottom = '20px';
-        audioControls.style.justifyContent = 'center';
+        audioControls.style.cssText = `
+            display: flex;
+            gap: 15px;
+            margin-bottom: 25px;
+            justify-content: center;
+        `;
 
-        const micButton = document.createElement('button');
-        micButton.id = 'mic-toggle';
-        micButton.innerHTML = '🎤';
-        micButton.style.width = '40px';
-        micButton.style.height = '40px';
-        micButton.style.borderRadius = '50%';
-        micButton.style.background = '#00ff9d';
-        micButton.style.border = 'none';
-        micButton.style.cursor = 'pointer';
-        micButton.style.fontSize = '20px';
-        micButton.style.display = 'flex';
-        micButton.style.alignItems = 'center';
-        micButton.style.justifyContent = 'center';
-        micButton.style.boxShadow = '0 0 10px #00ff9d';
-        micButton.style.transition = 'all 0.3s ease';
-        micButton.addEventListener('click', toggleMic);
+        const createIconButton = (id, icon, onClick) => {
+            const btn = document.createElement('button');
+            btn.id = id;
+            btn.innerHTML = icon;
+            btn.style.cssText = `
+                width: 45px;
+                height: 45px;
+                border-radius: 50%;
+                background: rgba(33, 38, 45, 0.8);
+                border: 1px solid rgba(88, 166, 255, 0.3);
+                cursor: pointer;
+                font-size: 20px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: all 0.2s ease;
+                color: #c9d1d9;
+            `;
+            btn.addEventListener('mouseenter', () => {
+                btn.style.borderColor = '#58a6ff';
+                btn.style.boxShadow = '0 0 10px rgba(88, 166, 255, 0.2)';
+            });
+            btn.addEventListener('mouseleave', () => {
+                btn.style.borderColor = 'rgba(88, 166, 255, 0.3)';
+                btn.style.boxShadow = 'none';
+            });
+            btn.addEventListener('click', onClick);
+            return btn;
+        };
 
-        const headphoneButton = document.createElement('button');
-        headphoneButton.id = 'headphone-toggle';
-        headphoneButton.innerHTML = '🎧';
-        headphoneButton.style.width = '40px';
-        headphoneButton.style.height = '40px';
-        headphoneButton.style.borderRadius = '50%';
-        headphoneButton.style.background = '#00ff9d';
-        headphoneButton.style.border = 'none';
-        headphoneButton.style.cursor = 'pointer';
-        headphoneButton.style.fontSize = '20px';
-        headphoneButton.style.display = 'flex';
-        headphoneButton.style.alignItems = 'center';
-        headphoneButton.style.justifyContent = 'center';
-        headphoneButton.style.boxShadow = '0 0 10px #00ff9d';
-        headphoneButton.style.transition = 'all 0.3s ease';
-        headphoneButton.addEventListener('click', toggleHeadphones);
+        const micButton = createIconButton('mic-toggle', '🎤', toggleMic);
+        // Initial state style update happens in updateButtonStyles called later
+        const headphoneButton = createIconButton('headphone-toggle', '🎧', toggleHeadphones);
 
         audioControls.appendChild(micButton);
         audioControls.appendChild(headphoneButton);
         container.appendChild(audioControls);
 
+        // Auto Mode Toggle (Main Switch)
         const toggleWrapper = document.createElement('div');
-        toggleWrapper.style.display = 'flex';
-        toggleWrapper.style.alignItems = 'center';
-        toggleWrapper.style.gap = '15px';
-        toggleWrapper.style.marginBottom = '20px';
+        toggleWrapper.style.cssText = `
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 25px;
+            background: rgba(33, 38, 45, 0.5);
+            padding: 10px;
+            border-radius: 8px;
+        `;
 
         const label = document.createElement('label');
         label.style.position = 'relative';
         label.style.display = 'inline-block';
-        label.style.width = '70px';
-        label.style.height = '34px';
+        label.style.width = '50px';
+        label.style.height = '26px';
 
         const toggleInput = document.createElement('input');
         toggleInput.type = 'checkbox';
@@ -910,28 +925,32 @@
 
         const slider = document.createElement('span');
         slider.className = 'slider';
-        slider.style.position = 'absolute';
-        slider.style.cursor = 'pointer';
-        slider.style.top = '0';
-        slider.style.left = '0';
-        slider.style.right = '0';
-        slider.style.bottom = '0';
-        slider.style.background = isAutoModeEnabled ? '#00ff9d' : '#555';
-        slider.style.transition = 'background 0.4s';
-        slider.style.borderRadius = '34px';
-        slider.style.boxShadow = 'inset 0 2px 5px rgba(0,0,0,0.5)';
+        slider.style.cssText = `
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #30363d;
+            transition: .4s;
+            border-radius: 34px;
+        `;
 
         const sliderCircle = document.createElement('span');
         sliderCircle.className = 'slider-circle';
-        sliderCircle.style.position = 'absolute';
-        sliderCircle.style.height = '26px';
-        sliderCircle.style.width = '26px';
-        sliderCircle.style.left = isAutoModeEnabled ? '40px' : '4px';
-        sliderCircle.style.bottom = '4px';
-        sliderCircle.style.background = '#fff';
-        sliderCircle.style.transition = 'left 0.4s';
-        sliderCircle.style.borderRadius = '50%';
-        sliderCircle.style.boxShadow = '0 2px 5px rgba(0,0,0,0.3)';
+        sliderCircle.style.cssText = `
+            position: absolute;
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        `;
+
+        if (isAutoModeEnabled) {
+            slider.style.backgroundColor = '#238636'; // GitHub Green
+            sliderCircle.style.transform = 'translateX(24px)';
+        }
 
         slider.appendChild(sliderCircle);
         label.appendChild(toggleInput);
@@ -939,134 +958,175 @@
 
         const toggleLabel = document.createElement('span');
         toggleLabel.className = 'toggle-label';
-        toggleLabel.textContent = `Авторежим ${isAutoModeEnabled ? 'ВКЛ' : 'ВЫКЛ'}`;
-        toggleLabel.style.color = isAutoModeEnabled ? '#00ff9d' : '#ff4d4d';
-        toggleLabel.style.fontSize = '16px';
-        toggleLabel.style.fontWeight = 'bold';
-        toggleLabel.style.textShadow = `0 0 5px ${isAutoModeEnabled ? '#00ff9d' : '#ff4d4d'}`;
+        toggleLabel.textContent = isAutoModeEnabled ? 'Авторежим ВКЛ' : 'Авторежим ВЫКЛ';
+        toggleLabel.style.cssText = `
+            font-size: 14px;
+            font-weight: 600;
+            color: ${isAutoModeEnabled ? '#3fb950' : '#f85149'};
+        `;
 
-        toggleWrapper.appendChild(label);
         toggleWrapper.appendChild(toggleLabel);
+        toggleWrapper.appendChild(label);
         container.appendChild(toggleWrapper);
 
+        // Detailed Settings
         const audioSettings = document.createElement('div');
-        audioSettings.style.display = 'flex';
-        audioSettings.style.flexDirection = 'column';
-        audioSettings.style.gap = '15px';
+        audioSettings.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        `;
 
         function createToggle(labelText, key) {
             const div = document.createElement('div');
             const toggleDiv = document.createElement('div');
-            toggleDiv.style.display = 'flex';
-            toggleDiv.style.alignItems = 'center';
-            toggleDiv.style.gap = '10px';
+            toggleDiv.style.cssText = `
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                cursor: pointer;
+            `;
 
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
-            checkbox.style.appearance = 'none';
-            checkbox.style.width = '20px';
-            checkbox.style.height = '20px';
-            checkbox.style.background = settings[key] ? '#00ff9d' : '#555';
-            checkbox.style.borderRadius = '5px';
-            checkbox.style.cursor = 'pointer';
-            checkbox.style.transition = 'background 0.3s';
-            checkbox.style.boxShadow = 'inset 0 2px 5px rgba(0,0,0,0.5)';
             checkbox.checked = settings[key];
+            checkbox.style.cssText = `
+                appearance: none;
+                width: 16px;
+                height: 16px;
+                border: 1px solid #30363d;
+                border-radius: 4px;
+                background-color: #0d1117;
+                cursor: pointer;
+                position: relative;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            `;
+            if (checkbox.checked) {
+                checkbox.style.backgroundColor = '#1f6feb';
+                checkbox.style.borderColor = '#1f6feb';
+            }
+
+            // Custom checkmark using pseudo-element logic via inline SVG or similar is hard,
+            // relying on background color change for simplicity in JS-only.
+            // Or simple unicode check.
+            const checkIcon = document.createElement('span');
+            checkIcon.textContent = '✔';
+            checkIcon.style.cssText = `
+                position: absolute;
+                font-size: 12px;
+                color: white;
+                display: ${checkbox.checked ? 'block' : 'none'};
+                pointer-events: none;
+            `;
+            checkbox.parentNode?.insertBefore(checkIcon, checkbox.nextSibling); // Hacky, appending to parent instead
+
+             // Wrapper for custom checkbox visual
+            const checkboxWrapper = document.createElement('div');
+            checkboxWrapper.style.position = 'relative';
+            checkboxWrapper.style.display = 'flex';
+            checkboxWrapper.style.alignItems = 'center';
+            checkboxWrapper.appendChild(checkbox);
+            checkboxWrapper.appendChild(checkIcon);
+
 
             const labelSpan = document.createElement('span');
             labelSpan.textContent = labelText;
-            labelSpan.style.fontSize = '14px';
-            labelSpan.style.color = '#fff';
-            labelSpan.style.fontWeight = 'bold';
-            labelSpan.style.textShadow = '0 0 3px rgba(255,255,255,0.5)';
+            labelSpan.style.cssText = 'font-size: 13px; color: #8b949e;';
 
-            toggleDiv.appendChild(checkbox);
+            toggleDiv.appendChild(checkboxWrapper);
             toggleDiv.appendChild(labelSpan);
             div.appendChild(toggleDiv);
 
+            // Additional controls (sliders)
             let volumeContainer = null;
             let pitchContainer = null;
+
+            // Slider Helper
+            const createSlider = (min, max, step, value, onInput) => {
+                const sliderInput = document.createElement('input');
+                sliderInput.type = 'range';
+                sliderInput.min = min;
+                sliderInput.max = max;
+                sliderInput.step = step;
+                sliderInput.value = value;
+                sliderInput.style.cssText = `
+                    width: 100%;
+                    height: 4px;
+                    background: #30363d;
+                    border-radius: 2px;
+                    appearance: none;
+                    outline: none;
+                    margin-top: 5px;
+                `;
+                sliderInput.addEventListener('input', function() {
+                    const percentage = ((this.value - this.min) / (this.max - this.min)) * 100;
+                    this.style.background = `linear-gradient(to right, #1f6feb ${percentage}%, #30363d ${percentage}%)`;
+                    onInput(this.value);
+                });
+                 // Initial gradient
+                const percentage = ((value - min) / (max - min)) * 100;
+                sliderInput.style.background = `linear-gradient(to right, #1f6feb ${percentage}%, #30363d ${percentage}%)`;
+
+                return sliderInput;
+            };
+
 
             if (key === 'enableLoopback') {
                 volumeContainer = document.createElement('div');
                 volumeContainer.style.display = settings.enableLoopback ? 'block' : 'none';
-                volumeContainer.style.marginTop = '10px';
+                volumeContainer.style.marginTop = '8px';
+                volumeContainer.style.paddingLeft = '26px';
 
-                const volumeLabel = document.createElement('span');
-                volumeLabel.textContent = `Громкость самопрослушивания: ${settings.gainValue.toFixed(1)}`;
-                volumeLabel.style.fontSize = '14px';
-                volumeLabel.style.color = '#fff';
-                volumeLabel.style.fontWeight = 'bold';
-                volumeLabel.style.textShadow = '0 0 3px rgba(255,255,255,0.5)';
+                const volumeLabel = document.createElement('div');
+                volumeLabel.textContent = `Громкость: ${settings.gainValue.toFixed(1)}`;
+                volumeLabel.style.fontSize = '12px';
+                volumeLabel.style.color = '#8b949e';
 
-                const volumeSlider = document.createElement('input');
-                volumeSlider.type = 'range';
-                volumeSlider.min = '0.1';
-                volumeSlider.max = '3.0';
-                volumeSlider.step = '0.1';
-                volumeSlider.value = settings.gainValue;
-                volumeSlider.style.width = '100%';
-                volumeSlider.style.height = '8px';
-                volumeSlider.style.background = `linear-gradient(to right, #ff007a ${((settings.gainValue - 0.1) / 2.9) * 100}%, #555 0%)`;
-                volumeSlider.style.borderRadius = '5px';
-                volumeSlider.style.outline = 'none';
-                volumeSlider.style.cursor = 'pointer';
-                volumeSlider.style.appearance = 'none';
-
-                volumeContainer.appendChild(volumeLabel);
-                volumeContainer.appendChild(volumeSlider);
-
-                volumeSlider.addEventListener('input', () => {
-                    settings.gainValue = parseFloat(volumeSlider.value);
-                    volumeLabel.textContent = `Громкость самопрослушивания: ${settings.gainValue.toFixed(1)}`;
+                const sliderEl = createSlider(0.1, 3.0, 0.1, settings.gainValue, (val) => {
+                    settings.gainValue = parseFloat(val);
+                    volumeLabel.textContent = `Громкость: ${settings.gainValue.toFixed(1)}`;
                     saveSetting('gainValue', settings.gainValue);
                     if (gainNode) gainNode.gain.value = settings.gainValue;
-                    volumeSlider.style.background = `linear-gradient(to right, #ff007a ${((settings.gainValue - 0.1) / 2.9) * 100}%, #555 0%)`;
                 });
+
+                volumeContainer.appendChild(volumeLabel);
+                volumeContainer.appendChild(sliderEl);
             }
 
             if (key === 'voicePitch') {
                 pitchContainer = document.createElement('div');
                 pitchContainer.style.display = settings.voicePitch ? 'block' : 'none';
-                pitchContainer.style.marginTop = '10px';
+                pitchContainer.style.marginTop = '8px';
+                pitchContainer.style.paddingLeft = '26px';
 
-                const pitchLabel = document.createElement('span');
-                pitchLabel.textContent = `0 - обычный голос, 0.40 - очень низкий: ${settings.pitchLevel.toFixed(2)}`;
-                pitchLabel.style.fontSize = '14px';
-                pitchLabel.style.color = '#fff';
-                pitchLabel.style.fontWeight = 'bold';
-                pitchLabel.style.textShadow = '0 0 3px rgba(255,255,255,0.5)';
+                const pitchLabel = document.createElement('div');
+                pitchLabel.textContent = `Уровень: ${settings.pitchLevel.toFixed(2)}`;
+                pitchLabel.style.fontSize = '12px';
+                pitchLabel.style.color = '#8b949e';
 
-                const pitchSlider = document.createElement('input');
-                pitchSlider.type = 'range';
-                pitchSlider.min = '0';
-                pitchSlider.max = '0.4';
-                pitchSlider.step = '0.01';
-                pitchSlider.value = settings.pitchLevel;
-                pitchSlider.style.width = '100%';
-                pitchSlider.style.height = '8px';
-                pitchSlider.style.background = `linear-gradient(to right, #ff007a ${(settings.pitchLevel / 0.4) * 100}%, #555 0%)`;
-                pitchSlider.style.borderRadius = '5px';
-                pitchSlider.style.outline = 'none';
-                pitchSlider.style.cursor = 'pointer';
-                pitchSlider.style.appearance = 'none';
-
-                pitchContainer.appendChild(pitchLabel);
-                pitchContainer.appendChild(pitchSlider);
-
-                pitchSlider.addEventListener('input', () => {
-                    settings.pitchLevel = parseFloat(pitchSlider.value);
-                    pitchLabel.textContent = `0 - обычный голос, 0.40 - очень низкий: ${settings.pitchLevel.toFixed(2)}`;
+                const sliderEl = createSlider(0, 0.4, 0.01, settings.pitchLevel, (val) => {
+                    settings.pitchLevel = parseFloat(val);
+                    pitchLabel.textContent = `Уровень: ${settings.pitchLevel.toFixed(2)}`;
                     saveSetting('pitchLevel', settings.pitchLevel);
                     updatePitchLevel(settings.pitchLevel);
-                    pitchSlider.style.background = `linear-gradient(to right, #ff007a ${(settings.pitchLevel / 0.4) * 100}%, #555 0%)`;
                 });
+
+                pitchContainer.appendChild(pitchLabel);
+                pitchContainer.appendChild(sliderEl);
             }
 
             checkbox.addEventListener('change', () => {
                 settings[key] = checkbox.checked;
                 saveSetting(key, checkbox.checked);
-                checkbox.style.background = checkbox.checked ? '#00ff9d' : '#555';
+
+                // Visual update
+                checkbox.style.backgroundColor = checkbox.checked ? '#1f6feb' : '#0d1117';
+                checkbox.style.borderColor = checkbox.checked ? '#1f6feb' : '#30363d';
+                checkIcon.style.display = checkbox.checked ? 'block' : 'none';
+
+
                 if (key === 'enableLoopback') {
                     if (checkbox.checked && globalStream) enableSelfListening(globalStream);
                     else if (audioContext) audioContext.close();
@@ -1099,8 +1159,8 @@
         }
 
         audioSettings.appendChild(createToggle('Самопрослушивание', 'enableLoopback'));
-        audioSettings.appendChild(createToggle('Автогромкость микрофона', 'autoGainControl'));
-        audioSettings.appendChild(createToggle('Автогромкость собеседника', 'autoVolume'));
+        audioSettings.appendChild(createToggle('Автогромкость (Микро)', 'autoGainControl'));
+        audioSettings.appendChild(createToggle('Автогромкость (Чат)', 'autoVolume'));
         audioSettings.appendChild(createToggle('Шумоподавление', 'noiseSuppression'));
         audioSettings.appendChild(createToggle('Эхоподавление', 'echoCancellation'));
         audioSettings.appendChild(createToggle('Низкий голос', 'voicePitch'));
@@ -1111,29 +1171,27 @@
 
         document.body.appendChild(container);
 
-        const styleSheet = document.createElement('style');
-        styleSheet.textContent = `
-            input[type="range"]::-webkit-slider-thumb {
-                appearance: none;
-                width: 16px;
-                height: 16px;
-                background: #ff007a;
-                border-radius: 50%;
-                cursor: pointer;
-                box-shadow: 0 0 5px #ff007a;
-            }
-            select:hover {
-                background: #333;
-            }
-            select:focus {
-                border-color: #00ff9d;
-            }
-        `;
-        document.head.appendChild(styleSheet);
+        // Hover effect for the whole container
+        container.addEventListener('mouseenter', () => {
+            container.style.opacity = '1';
+        });
 
-        container.addEventListener('mouseover', () => container.style.transform = 'scale(1.02)');
-        container.addEventListener('mouseout', () => container.style.transform = 'scale(1)');
-        toggleInput.addEventListener('change', (e) => toggleAutoMode(e.target.checked));
+        // Main Toggle Logic
+        toggleInput.addEventListener('change', (e) => {
+            toggleAutoMode(e.target.checked);
+            // Local visual update for slider
+            if (e.target.checked) {
+                slider.style.backgroundColor = '#238636';
+                sliderCircle.style.transform = 'translateX(24px)';
+                toggleLabel.textContent = 'Авторежим ВКЛ';
+                toggleLabel.style.color = '#3fb950';
+            } else {
+                slider.style.backgroundColor = '#30363d';
+                sliderCircle.style.transform = 'translateX(0)';
+                toggleLabel.textContent = 'Авторежим ВЫКЛ';
+                toggleLabel.style.color = '#f85149';
+            }
+        });
     }
 
     // ### Инициализация
@@ -1217,7 +1275,111 @@
         }
     });
 
+    // ### Canvas Background Animation (Web Effect)
+    function initParticles() {
+        const canvas = document.createElement('canvas');
+        canvas.id = 'particles-canvas';
+        document.body.prepend(canvas);
+
+        const ctx = canvas.getContext('2d');
+        let particles = [];
+        const particleCount = 100;
+        const connectionDistance = 150;
+        const mouseDistance = 200;
+
+        let mouse = { x: null, y: null };
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        window.addEventListener('resize', resize);
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.x;
+            mouse.y = e.y;
+        });
+
+        resize();
+
+        class Particle {
+            constructor() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+                this.vx = (Math.random() - 0.5) * 0.5;
+                this.vy = (Math.random() - 0.5) * 0.5;
+                this.size = Math.random() * 2 + 1;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+
+                if (this.x < 0 || this.x > canvas.width) this.vx *= -1;
+                if (this.y < 0 || this.y > canvas.height) this.vy *= -1;
+
+                // Mouse interaction
+                if (mouse.x != null) {
+                    let dx = mouse.x - this.x;
+                    let dy = mouse.y - this.y;
+                    let distance = Math.sqrt(dx * dx + dy * dy);
+                    if (distance < mouseDistance) {
+                        const forceDirectionX = dx / distance;
+                        const forceDirectionY = dy / distance;
+                        const force = (mouseDistance - distance) / mouseDistance;
+                        const directionX = forceDirectionX * force * 0.6;
+                        const directionY = forceDirectionY * force * 0.6;
+                        this.vx += directionX;
+                        this.vy += directionY;
+                    }
+                }
+            }
+
+            draw() {
+                ctx.fillStyle = 'rgba(88, 166, 255, 0.5)'; // GitHub Blue
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function initParticlesArray() {
+            particles = [];
+            for (let i = 0; i < particleCount; i++) {
+                particles.push(new Particle());
+            }
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let i = 0; i < particles.length; i++) {
+                particles[i].update();
+                particles[i].draw();
+
+                for (let j = i; j < particles.length; j++) {
+                    let dx = particles[i].x - particles[j].x;
+                    let dy = particles[i].y - particles[j].y;
+                    let distance = Math.sqrt(dx * dx + dy * dy);
+
+                    if (distance < connectionDistance) {
+                        ctx.beginPath();
+                        ctx.strokeStyle = `rgba(88, 166, 255, ${1 - distance / connectionDistance})`;
+                        ctx.lineWidth = 0.5;
+                        ctx.moveTo(particles[i].x, particles[i].y);
+                        ctx.lineTo(particles[j].x, particles[j].y);
+                        ctx.stroke();
+                    }
+                }
+            }
+            requestAnimationFrame(animate);
+        }
+
+        initParticlesArray();
+        animate();
+    }
+
     async function init() {
+        initParticles();
         console.log('Инициализация скрипта...');
         createSettingsUI();
         applyTheme(settings.selectedTheme);
