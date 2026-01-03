@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         AutoNektome
+// @name         PawycMe
 // @namespace    http://tampermonkey.net/
-// @version      4.8
+// @version      4.15
 // @description  Автоматический переход с настройками звука, голосовым управлением, улучшенной автогромкостью, изменением голоса и выбором тем для nekto.me audiochat
-// @author       @paracosm17
+// @author       @pawyc
 // @match        https://nekto.me/audiochat
 // @grant        none
 // @license      MIT
@@ -11,214 +11,248 @@
 // @updateURL https://update.greasyfork.org/scripts/498724/AutoNektome.meta.js
 // ==/UserScript==
 
-(function() {
-    'use strict';
+(function () {
+  "use strict";
 
-    // ==========================================
-    // КОНФИГУРАЦИЯ
-    // ==========================================
-    const CONFIG = {
-        sounds: {
-            start: 'https://zvukogram.com/mp3/22/skype-sound-message-received-message-received.mp3',
-            end: 'https://www.myinstants.com/media/sounds/teleport1_Cw1ot9l.mp3',
-            startVol: 0.4,
-            endVol: 0.3
-        },
-        autoVol: { target: 50, interval: 200, smoothing: 0.8 },
-        themes: {
-            'Original': null,
-            'GitHub Dark': 'https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/githubdark.css'
-        },
-        voiceCommands: {
-            skip: ['скип', 'skip', 'скиф', 'далее', 'некст'],
-            stop: ['завершить', 'остановить', 'закончить', 'стоп'],
-            start: ['чат', 'старт', 'поехали', 'начни', 'начать', 'поиск', 'ищи', 'найди']
-        }
-    };
+  // ==========================================
+  // КОНФИГУРАЦИЯ
+  // ==========================================
+  const CONFIG = {
+    sounds: {
+      start:
+        "https://zvukogram.com/mp3/22/skype-sound-message-received-message-received.mp3",
+      end: "https://www.myinstants.com/media/sounds/teleport1_Cw1ot9l.mp3",
+      startVol: 0.4,
+      endVol: 0.3,
+    },
+    autoVol: { target: 50, interval: 200, smoothing: 0.8 },
+    themes: {
+      Original: null,
+      "GitHub Dark":
+        "https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/githubdark.css",
+    },
+    voiceCommands: {
+      skip: ["скип", "skip", "скиф", "далее", "некст"],
+      stop: ["завершить", "остановить", "закончить", "стоп"],
+      start: [
+        "чат",
+        "старт",
+        "поехали",
+        "начни",
+        "начать",
+        "поиск",
+        "ищи",
+        "найди",
+      ],
+    },
+  };
 
-    const settings = {
-        enableLoopback: false,
-        gainValue: 1.5,
-        voicePitch: false,
-        pitchLevel: 0.5,
-        voiceEnhance: true,
-        noiseSuppression: true,
-        autoVolume: true,
-        voiceControl: false,
-        conversationCount: 0,
-        selectedTheme: 'Original',
-        isCollapsed: false,
-        ...JSON.parse(localStorage.getItem('AutoNektomeSettings') || '{}')
-    };
+  const settings = {
+    enableLoopback: false,
+    gainValue: 1.0,
+    voicePitch: false,
+    pitchLevel: 0.5,
+    voiceEnhance: false, // Выключено по умолчанию для надежности
+    noiseSuppression: true,
+    autoVolume: true,
+    voiceControl: false,
+    conversationCount: 0,
+    selectedTheme: "Original",
+    isCollapsed: false,
+    ...JSON.parse(localStorage.getItem("AutoNektomeSettings") || "{}"),
+  };
 
-    function saveSettings() {
-        localStorage.setItem('AutoNektomeSettings', JSON.stringify(settings));
-    }
+  let isAutoModeEnabled = false;
 
-    // ==========================================
-    // AUDIO ENGINE
-    // ==========================================
-    const AudioEngine = {
-        ctx: null,
-        workletLoaded: false,
-        micSource: null,
-        inputNode: null,
-        outputNode: null,
-        stableDest: null,
-        pitchNode: null,
-        gainNode: null,
-        
-        async getContext() {
-            if (!this.ctx) {
-                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            if (this.ctx.state === 'suspended') await this.ctx.resume();
-            return this.ctx;
-        },
+  function saveSettings() {
+    const toSave = { ...settings };
+    delete toSave.isAutoModeEnabled;
+    localStorage.setItem("AutoNektomeSettings", JSON.stringify(toSave));
+  }
 
-        async initWorklet() {
-            if (this.workletLoaded) return;
-            const ctx = await this.getContext();
-            const workletCode = `
+  // ==========================================
+  // AUDIO ENGINE (Robust & Preview)
+  // ==========================================
+  const AudioEngine = {
+    ctx: null,
+    workletLoaded: false,
+
+    // Потоки
+    micSource: null,
+    previewStream: null, // Стрим для предпрослушивания (до звонка)
+    outputNode: null,
+    stableDest: null,
+    loopGain: null,
+    pitchNode: null,
+
+    async getContext() {
+      if (!this.ctx) {
+        const AudioContextClass =
+          window.AudioContext || window.webkitAudioContext;
+        if (AudioContextClass) this.ctx = new AudioContextClass();
+      }
+      if (this.ctx.state === "suspended") this.ctx.resume().catch(() => {});
+      return this.ctx;
+    },
+
+    // Запуск предпрослушивания (когда сайт еще не попросил микрофон)
+    async startPreview() {
+      try {
+        // Останавливаем старый, если был
+        this.stopPreview();
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: settings.noiseSuppression,
+          },
+        });
+        this.previewStream = stream;
+        await this.updateChain(stream);
+      } catch (e) {
+        console.error("Preview failed:", e);
+      }
+    },
+
+    stopPreview() {
+      if (this.previewStream) {
+        this.previewStream.getTracks().forEach((t) => t.stop());
+        this.previewStream = null;
+      }
+    },
+
+    async initWorklet() {
+      if (this.workletLoaded) return;
+      const ctx = await this.getContext();
+      if (!ctx) return;
+
+      const workletCode = `
                 class PitchShiftProcessor extends AudioWorkletProcessor {
-                    constructor() { 
-                        super(); 
+                    constructor() {
+                        super();
                         this.size = 2048;
                         this.buffer = new Float32Array(this.size);
-                        this.w = 0; this.r = 0; this.pitch = 1.0; 
-                        this.port.onmessage = e => this.pitch = e.data; 
+                        this.w=0; this.r=0; this.pitch=1.0;
+                        this.port.onmessage = e => this.pitch = e.data;
                     }
                     process(I, O) {
-                        const i = I[0][0], o = O[0][0]; 
-                        if(!i || !o) return true;
-                        const L = this.buffer.length;
+                        const i=I[0][0], o=O[0][0]; if(!i||!o) return true;
+                        const L=this.buffer.length;
                         for(let j=0; j<i.length; j++) {
-                            this.buffer[this.w] = i[j];
-                            o[j] = this.buffer[Math.floor(this.r) % L];
-                            this.w = (this.w + 1) % L;
-                            this.r = (this.r + this.pitch) % L;
+                            this.buffer[this.w]=i[j];
+                            o[j]=this.buffer[Math.floor(this.r)%L];
+                            this.w=(this.w+1)%L; this.r=(this.r+this.pitch)%L;
                         }
                         return true;
                     }
                 }
                 registerProcessor('pitch-shift-processor', PitchShiftProcessor);
             `;
-            const blob = new Blob([workletCode], { type: 'application/javascript' });
-            await ctx.audioWorklet.addModule(URL.createObjectURL(blob));
-            this.workletLoaded = true;
-        },
 
-        async getStableStream() {
-            const ctx = await this.getContext();
-            if (!this.stableDest) {
-                this.stableDest = ctx.createMediaStreamDestination();
-            }
-            return this.stableDest.stream;
-        },
-
-        async updateChain(stream) {
-            const ctx = await this.getContext();
-            if (!this.stableDest) await this.getStableStream();
-            
-            if (this.micSource) this.micSource.disconnect();
-            if (this.inputNode) this.inputNode.disconnect();
-            
-            this.micSource = ctx.createMediaStreamSource(stream);
-            this.inputNode = ctx.createGain();
-            this.outputNode = ctx.createGain();
-            
-            this.micSource.connect(this.inputNode);
-            let current = this.inputNode;
-
-            // Студийный звук (Compressor + EQ)
-            if (settings.voiceEnhance) {
-                const hp = ctx.createBiquadFilter();
-                hp.type = 'highpass'; hp.frequency.value = 85;
-                
-                const comp = ctx.createDynamicsCompressor();
-                comp.threshold.value = -24; comp.knee.value = 30;
-                comp.ratio.value = 12; comp.attack.value = 0.003; comp.release.value = 0.25;
-
-                current.connect(hp);
-                hp.connect(comp);
-                current = comp;
-            }
-
-            // Изменение голоса (Pitch)
-            if (settings.voicePitch) {
-                await this.initWorklet();
-                this.pitchNode = new AudioWorkletNode(ctx, 'pitch-shift-processor');
-                const factor = settings.pitchLevel + 0.5; 
-                this.pitchNode.port.postMessage(factor);
-                
-                current.connect(this.pitchNode);
-                current = this.pitchNode;
-            }
-
-            current.connect(this.outputNode);
-            this.outputNode.connect(this.stableDest);
-
-            // Самопрослушивание
-            if (settings.enableLoopback) {
-                if (this.gainNode) this.gainNode.disconnect();
-                this.gainNode = ctx.createGain();
-                this.gainNode.gain.value = settings.gainValue;
-                this.outputNode.connect(this.gainNode);
-                this.gainNode.connect(ctx.destination);
-            } else if (this.gainNode) {
-                this.gainNode.disconnect();
-            }
-        },
-
-        updateLiveParams() {
-            if (this.gainNode) this.gainNode.gain.value = settings.gainValue;
-            if (this.pitchNode) {
-                this.pitchNode.port.postMessage(settings.pitchLevel + 0.5);
-            }
-        }
-    };
-
-    // ==========================================
-    // AUTO VOLUME
-    // ==========================================
-    let autoVolInterval = null;
-    function startAutoVolume(stream) {
-        if (!settings.autoVolume || !stream) return;
-        AudioEngine.getContext().then(ctx => {
-            const source = ctx.createMediaStreamSource(stream);
-            const analyser = ctx.createAnalyser();
-            analyser.fftSize = 256;
-            source.connect(analyser);
-            const data = new Uint8Array(analyser.frequencyBinCount);
-            const audioEl = document.querySelector('audio#audioStream');
-            let smoothVol = CONFIG.autoVol.target;
-
-            if (autoVolInterval) clearInterval(autoVolInterval);
-            autoVolInterval = setInterval(() => {
-                if (!settings.autoVolume || !audioEl) return;
-                analyser.getByteTimeDomainData(data);
-                let sum = 0;
-                for(let i=0; i<data.length; i++) {
-                    const v = (data[i] - 128) / 128;
-                    sum += v*v;
-                }
-                const rms = Math.sqrt(sum/data.length);
-                const currentVol = Math.min(1, rms*10) * 100;
-                smoothVol = (smoothVol * CONFIG.autoVol.smoothing) + (currentVol * (1 - CONFIG.autoVol.smoothing));
-                if (smoothVol > CONFIG.autoVol.target + 15) {
-                    if (audioEl.volume > 0.2) audioEl.volume -= 0.02;
-                }
-            }, CONFIG.autoVol.interval);
+      try {
+        const blob = new Blob([workletCode], {
+          type: "application/javascript",
         });
-    }
+        await ctx.audioWorklet.addModule(URL.createObjectURL(blob));
+        this.workletLoaded = true;
+      } catch (e) {
+        console.error(e);
+      }
+    },
 
-    // ==========================================
-    // UI
-    // ==========================================
-    function createUI() {
-        if (document.getElementById('an-ui')) return;
+    async getStableStream() {
+      const ctx = await this.getContext();
+      if (!this.stableDest && ctx) {
+        this.stableDest = ctx.createMediaStreamDestination();
+      }
+      return this.stableDest ? this.stableDest.stream : null;
+    },
 
-        const css = `
+    // Основная функция сборки графа
+    async updateChain(stream) {
+      const ctx = await this.getContext();
+      if (!ctx) return;
+      if (!this.stableDest) await this.getStableStream();
+
+      // Отключаем старые узлы
+      try {
+        if (this.micSource) this.micSource.disconnect();
+        if (this.loopGain) this.loopGain.disconnect();
+      } catch (e) {}
+
+      this.micSource = ctx.createMediaStreamSource(stream);
+      let current = this.micSource;
+
+      // --- ЭФФЕКТЫ ---
+
+      // 1. Студийный звук
+      if (settings.voiceEnhance) {
+        const hp = ctx.createBiquadFilter();
+        hp.type = "highpass";
+        hp.frequency.value = 85;
+        const comp = ctx.createDynamicsCompressor();
+        comp.threshold.value = -24;
+        comp.knee.value = 30;
+        comp.ratio.value = 12;
+        comp.attack.value = 0.003;
+        comp.release.value = 0.25;
+
+        current.connect(hp);
+        hp.connect(comp);
+        current = comp;
+      }
+
+      // 2. Питч
+      if (settings.voicePitch) {
+        await this.initWorklet();
+        if (this.workletLoaded) {
+          const pitchNode = new AudioWorkletNode(ctx, "pitch-shift-processor");
+          pitchNode.port.postMessage(settings.pitchLevel + 0.5);
+          current.connect(pitchNode);
+          current = pitchNode;
+          this.pitchNode = pitchNode;
+        }
+      }
+
+      // 3. Вывод на сайт (в stableDest)
+      current.connect(this.stableDest);
+
+      // 4. Самопрослушивание (Прямо в destination)
+      if (settings.enableLoopback) {
+        this.loopGain = ctx.createGain();
+        this.loopGain.gain.value = settings.gainValue;
+
+        current.connect(this.loopGain);
+        this.loopGain.connect(ctx.destination);
+      }
+    },
+
+    updateLiveParams() {
+      if (this.pitchNode)
+        this.pitchNode.port.postMessage(settings.pitchLevel + 0.5);
+      if (this.loopGain) this.loopGain.gain.value = settings.gainValue;
+    },
+  };
+
+  // ==========================================
+  // GLOBAL UNLOCK
+  // ==========================================
+  document.addEventListener(
+    "click",
+    () => {
+      if (AudioEngine.ctx && AudioEngine.ctx.state === "suspended")
+        AudioEngine.ctx.resume();
+    },
+    { once: false, capture: true },
+  );
+
+  // ==========================================
+  // UI
+  // ==========================================
+  function createUI() {
+    if (document.getElementById("an-ui")) return;
+
+    const css = `
             #an-ui {
                 position: fixed; top: 20px; right: 20px; z-index: 999999;
                 background: rgba(13, 17, 23, 0.9); backdrop-filter: blur(12px);
@@ -258,284 +292,425 @@
             .an-select { width: 100%; background: #161b22; color: #c9d1d9; border: 1px solid #30363d; padding: 6px; border-radius: 6px; font-size: 13px; }
         `;
 
-        const style = document.createElement('style');
-        style.textContent = css;
-        document.head.appendChild(style);
+    const style = document.createElement("style");
+    style.textContent = css;
+    document.head.appendChild(style);
 
-        const ui = document.createElement('div');
-        ui.id = 'an-ui';
-        if (settings.isCollapsed) ui.classList.add('an-minimized');
+    const ui = document.createElement("div");
+    ui.id = "an-ui";
+    if (settings.isCollapsed) ui.classList.add("an-minimized");
 
-        const header = document.createElement('div');
-        header.className = 'an-header';
-        header.innerHTML = `<span class="an-title">AutoNektome v4.8</span><span class="an-arrow">▼</span>`;
-        header.onclick = () => { ui.classList.toggle('an-minimized'); settings.isCollapsed = ui.classList.contains('an-minimized'); saveSettings(); };
-        ui.append(header);
-
-        const content = document.createElement('div');
-        content.className = 'an-content';
-
-        const btnGroup = document.createElement('div');
-        btnGroup.className = 'an-btn-group';
-        const micBtn = document.createElement('button');
-        micBtn.className = 'an-icon-btn'; micBtn.innerHTML = '🎤';
-        micBtn.onclick = () => { isMicMuted = !isMicMuted; updateBtns(); toggleMicState(); };
-        const headBtn = document.createElement('button');
-        headBtn.className = 'an-icon-btn'; headBtn.innerHTML = '🎧';
-        headBtn.onclick = () => { isHeadphonesMuted = !isHeadphonesMuted; updateBtns(); toggleHeadState(); };
-        function updateBtns() {
-            micBtn.className = `an-icon-btn ${isMicMuted ? 'muted' : ''}`;
-            headBtn.className = `an-icon-btn ${isHeadphonesMuted ? 'muted' : ''}`;
-        }
-        btnGroup.append(micBtn, headBtn);
-        content.append(btnGroup);
-
-        function addToggle(label, key, cb) {
-            const row = document.createElement('div');
-            row.className = 'an-row';
-            row.innerHTML = `<span class="an-label">${label}</span>`;
-            const tog = document.createElement('label');
-            tog.className = 'an-toggle';
-            const inp = document.createElement('input');
-            inp.type = 'checkbox';
-            inp.checked = key === 'autoMode' ? isAutoModeEnabled : settings[key];
-            inp.onchange = (e) => {
-                if(key === 'autoMode') isAutoModeEnabled = e.target.checked;
-                else { settings[key] = e.target.checked; saveSettings(); }
-                if(cb) cb(e.target.checked);
-            };
-            tog.append(inp, document.createElement('span'));
-            tog.lastChild.className = 'an-slider';
-            row.append(tog);
-            content.append(row);
-            return row;
-        }
-
-        addToggle('Авторежим', 'autoMode');
-        
-        // Loopback
-        addToggle('Самопрослушивание', 'enableLoopback', (v) => { refreshAudio(); lbSub.style.display = v ? 'block' : 'none'; });
-        const lbSub = document.createElement('div');
-        lbSub.className = 'an-sub';
-        lbSub.style.display = settings.enableLoopback ? 'block' : 'none';
-        lbSub.innerHTML = `<div style="font-size:11px; margin-bottom:5px; color:#8b949e;">Громкость</div>`;
-        const lbRange = document.createElement('input');
-        lbRange.type = 'range'; lbRange.className = 'an-range';
-        lbRange.min=0.1; lbRange.max=3.0; lbRange.step=0.1; lbRange.value=settings.gainValue;
-        lbRange.oninput = (e) => { settings.gainValue = parseFloat(e.target.value); saveSettings(); AudioEngine.updateLiveParams(); };
-        lbSub.append(lbRange);
-        content.append(lbSub);
-
-        addToggle('Студийный звук', 'voiceEnhance', () => refreshAudio());
-        
-        addToggle('Изменение голоса', 'voicePitch', (v) => { refreshAudio(); pSub.style.display = v ? 'block' : 'none'; });
-        const pSub = document.createElement('div');
-        pSub.className = 'an-sub';
-        pSub.style.display = settings.voicePitch ? 'block' : 'none';
-        pSub.innerHTML = `<div style="font-size:11px; margin-bottom:5px; color:#8b949e;">Тон (ниже - влево)</div>`;
-        const pRange = document.createElement('input');
-        pRange.type = 'range'; pRange.className = 'an-range';
-        pRange.min=0; pRange.max=1; pRange.step=0.01; pRange.value=settings.pitchLevel;
-        pRange.oninput = (e) => { settings.pitchLevel = parseFloat(e.target.value); saveSettings(); AudioEngine.updateLiveParams(); };
-        pSub.append(pRange);
-        content.append(pSub);
-
-        addToggle('Шумоподавление', 'noiseSuppression', (enabled) => updateMicConstraints(enabled));
-        addToggle('Автогромкость чата', 'autoVolume');
-        addToggle('Голосовое управление', 'voiceControl', (v) => { if(v) { if(!recognition) initSpeech(); recognition.start(); } else if(recognition) recognition.stop(); });
-
-        const tRow = document.createElement('div');
-        tRow.className = 'an-row';
-        const sel = document.createElement('select');
-        sel.className = 'an-select';
-        for(let k in CONFIG.themes) {
-            let o = document.createElement('option');
-            o.value = k; o.textContent = k;
-            if(k===settings.selectedTheme) o.selected = true;
-            sel.append(o);
-        }
-        sel.onchange = (e) => applyTheme(e.target.value);
-        tRow.append(sel);
-        content.append(tRow);
-
-        ui.append(content);
-        document.body.append(ui);
-        updateBtns();
-    }
-    
-    function refreshAudio() {
-        if(globalMicStreamOrig) AudioEngine.updateChain(globalMicStreamOrig);
-    }
-    
-    // Обновление настроек шумодава без перезагрузки
-    async function updateMicConstraints(enableNS) {
-        if (globalMicStreamOrig) {
-            const track = globalMicStreamOrig.getAudioTracks()[0];
-            if (track) {
-                try {
-                    await track.applyConstraints({
-                        noiseSuppression: enableNS,
-                        echoCancellation: false,
-                        autoGainControl: false
-                    });
-                } catch(e) { console.error('Constraint Error', e); }
-            }
-        }
-    }
-
-    // ==========================================
-    // SYSTEM
-    // ==========================================
-    let isAutoModeEnabled = true;
-    let isMicMuted = false;
-    let isHeadphonesMuted = false;
-    let globalMicStreamOrig = null;
-    let recognition = null;
-    let conversationTimer = null;
-    let currentThemeStyle = null;
-    
-    const soundStart = new Audio(CONFIG.sounds.start); soundStart.volume = CONFIG.sounds.startVol;
-    const soundEnd = new Audio(CONFIG.sounds.end); soundEnd.volume = CONFIG.sounds.endVol;
-
-    function applyTheme(name) {
-        document.documentElement.style.background = '#0d1117';
-        document.body.style.background = '#0d1117';
-        if (currentThemeStyle) currentThemeStyle.remove();
-        if (name !== 'Original' && CONFIG.themes[name]) {
-            const link = document.createElement('style');
-            fetch(CONFIG.themes[name]).then(r=>r.text()).then(css=>{
-                link.textContent = css; document.head.append(link); currentThemeStyle = link;
-                document.body.classList.add('night_theme');
-            });
-        } else if(name === 'Original') {
-            document.body.classList.remove('night_theme');
-            document.body.style.background = ''; document.documentElement.style.background = '';
-        }
-        settings.selectedTheme = name;
-        saveSettings();
-    }
-
-    const origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-    navigator.mediaDevices.getUserMedia = async (constraints) => {
-        if (constraints?.audio) {
-            constraints.audio = {
-                ...constraints.audio,
-                autoGainControl: false,
-                noiseSuppression: settings.noiseSuppression,
-                echoCancellation: false // FORCE OFF
-            };
-        }
-        try {
-            const stream = await origGUM(constraints);
-            globalMicStreamOrig = stream;
-            await AudioEngine.updateChain(stream);
-            const stable = await AudioEngine.getStableStream();
-            if(isMicMuted) toggleMicState();
-            return stable;
-        } catch (e) { console.error(e); throw e; }
+    const header = document.createElement("div");
+    header.className = "an-header";
+    header.innerHTML = `<span class="an-title">AutoNektome v4.14</span><span class="an-arrow">▼</span>`;
+    header.onclick = () => {
+      ui.classList.toggle("an-minimized");
+      settings.isCollapsed = ui.classList.contains("an-minimized");
+      saveSettings();
     };
+    ui.append(header);
 
-    function toggleMicState() {
-        if(globalMicStreamOrig) globalMicStreamOrig.getAudioTracks().forEach(t => t.enabled = !isMicMuted);
+    const content = document.createElement("div");
+    content.className = "an-content";
+
+    const btnGroup = document.createElement("div");
+    btnGroup.className = "an-btn-group";
+    const micBtn = document.createElement("button");
+    micBtn.className = "an-icon-btn";
+    micBtn.innerHTML = "🎤";
+    micBtn.onclick = () => {
+      isMicMuted = !isMicMuted;
+      updateBtns();
+      toggleMicState();
+    };
+    const headBtn = document.createElement("button");
+    headBtn.className = "an-icon-btn";
+    headBtn.innerHTML = "🎧";
+    headBtn.onclick = () => {
+      isHeadphonesMuted = !isHeadphonesMuted;
+      updateBtns();
+      toggleHeadState();
+    };
+    function updateBtns() {
+      micBtn.className = `an-icon-btn ${isMicMuted ? "muted" : ""}`;
+      headBtn.className = `an-icon-btn ${isHeadphonesMuted ? "muted" : ""}`;
     }
-    
-    function toggleHeadState() {
-        const audio = document.querySelector('audio#audioStream');
-        if(audio) audio.muted = isHeadphonesMuted;
-        if(isHeadphonesMuted && !isMicMuted) { isMicMuted=true; toggleMicState(); }
+    btnGroup.append(micBtn, headBtn);
+    content.append(btnGroup);
+
+    function addToggle(label, key, cb) {
+      const row = document.createElement("div");
+      row.className = "an-row";
+      row.innerHTML = `<span class="an-label">${label}</span>`;
+      const tog = document.createElement("label");
+      tog.className = "an-toggle";
+      const inp = document.createElement("input");
+      inp.type = "checkbox";
+      inp.checked = key === "autoMode" ? isAutoModeEnabled : settings[key];
+      inp.onchange = (e) => {
+        if (key === "autoMode") isAutoModeEnabled = e.target.checked;
+        else {
+          settings[key] = e.target.checked;
+          saveSettings();
+        }
+        if (cb) cb(e.target.checked);
+      };
+      tog.append(inp, document.createElement("span"));
+      tog.lastChild.className = "an-slider";
+      row.append(tog);
+      content.append(row);
+      return row;
     }
 
-    let obsTimer;
-    const observer = new MutationObserver(() => {
-        if (obsTimer) clearTimeout(obsTimer);
-        obsTimer = setTimeout(() => {
-            if (isAutoModeEnabled) clickSearch();
-            const audio = document.querySelector('audio#audioStream');
-            if (audio && !audio.dataset.inited) {
-                audio.dataset.inited = 'true';
-                if (audio.srcObject) startAutoVolume(audio.srcObject);
-            }
-            const timer = document.querySelector('.callScreen__time, .timer-label');
-            if (timer && timer.textContent === '00:00' && !conversationTimer) {
-                soundStart.play().catch(()=>{}); conversationTimer = true;
-            } else if (!timer && conversationTimer) {
-                soundEnd.play().catch(()=>{}); conversationTimer = null;
-                settings.conversationCount++; saveSettings();
-            }
-        }, 150);
+    addToggle("Авторежим", "autoMode");
+    addToggle("Самопрослушивание", "enableLoopback", (v) => {
+      // ЛОГИКА PREVIEW
+      if (v) {
+        // Если звонок не идет, включаем превью микрофона
+        if (!globalMicStreamOrig) AudioEngine.startPreview();
+        else AudioEngine.updateChain(globalMicStreamOrig); // Если идет, обновляем текущий
+      } else {
+        AudioEngine.stopPreview(); // Выключаем превью
+        AudioEngine.updateChain(globalMicStreamOrig); // Обновляем текущий (убираем лупбэк)
+      }
+      lbSub.style.display = v ? "block" : "none";
     });
 
-    function clickSearch() {
-        const btn = document.getElementById('searchCompanyBtn') || 
-                    document.querySelector('button.callScreen__findBtn, button.go-scan-button, .scan-button');
-        if (btn && btn.offsetParent) btn.click();
-    }
+    const lbSub = document.createElement("div");
+    lbSub.className = "an-sub";
+    lbSub.style.display = settings.enableLoopback ? "block" : "none";
+    lbSub.innerHTML = `<div style="font-size:11px; margin-bottom:5px; color:#8b949e;">Громкость</div>`;
+    const lbRange = document.createElement("input");
+    lbRange.type = "range";
+    lbRange.className = "an-range";
+    lbRange.min = 0.0;
+    lbRange.max = 1.0;
+    lbRange.step = 0.05;
+    lbRange.value = settings.gainValue > 1 ? 1 : settings.gainValue;
+    lbRange.oninput = (e) => {
+      settings.gainValue = parseFloat(e.target.value);
+      saveSettings();
+      AudioEngine.updateLiveParams();
+    };
+    lbSub.append(lbRange);
+    content.append(lbSub);
 
-    function initSpeech() {
-        if (!('webkitSpeechRecognition' in window)) return;
-        recognition = new webkitSpeechRecognition();
-        recognition.continuous = true;
-        recognition.lang = 'ru-RU';
-        recognition.onresult = (e) => {
-            const t = e.results[e.results.length-1][0].transcript.toLowerCase();
-            if (CONFIG.voiceCommands.skip.some(w=>t.includes(w))) skip();
-            if (CONFIG.voiceCommands.stop.some(w=>t.includes(w))) { isAutoModeEnabled=false; skip(); }
-            if (CONFIG.voiceCommands.start.some(w=>t.includes(w))) { isAutoModeEnabled=true; clickSearch(); }
-        };
-        recognition.onend = () => { if(settings.voiceControl) recognition.start(); };
-    }
+    addToggle("Студийный звук", "voiceEnhance", () => refreshAudio());
+    addToggle("Изменение голоса", "voicePitch", (v) => {
+      refreshAudio();
+      pSub.style.display = v ? "block" : "none";
+    });
+    const pSub = document.createElement("div");
+    pSub.className = "an-sub";
+    pSub.style.display = settings.voicePitch ? "block" : "none";
+    pSub.innerHTML = `<div style="font-size:11px; margin-bottom:5px; color:#8b949e;">Тон (ниже - влево)</div>`;
+    const pRange = document.createElement("input");
+    pRange.type = "range";
+    pRange.className = "an-range";
+    pRange.min = 0;
+    pRange.max = 1;
+    pRange.step = 0.01;
+    pRange.value = settings.pitchLevel;
+    pRange.oninput = (e) => {
+      settings.pitchLevel = parseFloat(e.target.value);
+      saveSettings();
+      AudioEngine.updateLiveParams();
+    };
+    pSub.append(pRange);
+    content.append(pSub);
 
-    function skip() {
-        const btn = document.querySelector('button.callScreen__cancelCallBtn, button.stop-talk-button');
-        if(btn) {
-            btn.click();
-            setTimeout(() => { const confirm = document.querySelector('button.swal2-confirm'); if(confirm) confirm.click(); }, 300);
+    addToggle("Шумоподавление", "noiseSuppression", (enabled) =>
+      updateMicConstraints(enabled),
+    );
+    addToggle("Автогромкость чата", "autoVolume");
+    addToggle("Голосовое управление", "voiceControl", (v) => {
+      if (v) {
+        if (!recognition) initSpeech();
+        if (recognition) recognition.start();
+      } else if (recognition) recognition.stop();
+    });
+
+    const tRow = document.createElement("div");
+    tRow.className = "an-row";
+    const sel = document.createElement("select");
+    sel.className = "an-select";
+    for (let k in CONFIG.themes) {
+      let o = document.createElement("option");
+      o.value = k;
+      o.textContent = k;
+      if (k === settings.selectedTheme) o.selected = true;
+      sel.append(o);
+    }
+    sel.onchange = (e) => applyTheme(e.target.value);
+    tRow.append(sel);
+    content.append(tRow);
+
+    ui.append(content);
+    document.body.append(ui);
+    updateBtns();
+  }
+
+  function refreshAudio() {
+    if (globalMicStreamOrig) AudioEngine.updateChain(globalMicStreamOrig);
+    else if (settings.enableLoopback) AudioEngine.startPreview(); // Если просто тестим
+  }
+
+  async function updateMicConstraints(enableNS) {
+    if (globalMicStreamOrig) {
+      const track = globalMicStreamOrig.getAudioTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({
+            noiseSuppression: enableNS,
+            echoCancellation: false,
+            autoGainControl: false,
+          });
+        } catch (e) {
+          console.error(e);
         }
+      }
     }
-    
-    function initParticles() {
-        const c = document.createElement('canvas');
-        c.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:-1;pointer-events:none;opacity:0;transition:opacity 2s;';
-        document.body.prepend(c);
-        setTimeout(()=>c.style.opacity='1',100);
-        const ctx = c.getContext('2d');
-        let w, h, parts=[];
-        const resize = () => { w=c.width=window.innerWidth; h=c.height=window.innerHeight; };
-        window.onresize = resize; resize();
-        class P {
-            constructor() { this.x=Math.random()*w; this.y=Math.random()*h; this.vx=(Math.random()-.5)*.2; this.vy=(Math.random()-.5)*.2; }
-            up() { this.x+=this.vx; this.y+=this.vy; if(this.x<0||this.x>w)this.vx*=-1; if(this.y<0||this.y>h)this.vy*=-1; }
-            dr() { ctx.fillStyle='rgba(88,166,255,0.4)'; ctx.beginPath(); ctx.arc(this.x,this.y,1.5,0,Math.PI*2); ctx.fill(); }
+  }
+
+  // ==========================================
+  // SYSTEM
+  // ==========================================
+  let isMicMuted = false;
+  let isHeadphonesMuted = false;
+  let globalMicStreamOrig = null;
+  let recognition = null;
+  let conversationTimer = null;
+  let currentThemeStyle = null;
+
+  const soundStart = new Audio(CONFIG.sounds.start);
+  soundStart.volume = CONFIG.sounds.startVol;
+  const soundEnd = new Audio(CONFIG.sounds.end);
+  soundEnd.volume = CONFIG.sounds.endVol;
+
+  function applyTheme(name) {
+    document.documentElement.style.background = "#0d1117";
+    document.body.style.background = "#0d1117";
+    if (currentThemeStyle) currentThemeStyle.remove();
+    if (name !== "Original" && CONFIG.themes[name]) {
+      const link = document.createElement("style");
+      fetch(CONFIG.themes[name])
+        .then((r) => r.text())
+        .then((css) => {
+          link.textContent = css;
+          document.head.append(link);
+          currentThemeStyle = link;
+          document.body.classList.add("night_theme");
+        });
+    } else if (name === "Original") {
+      document.body.classList.remove("night_theme");
+      document.body.style.background = "";
+      document.documentElement.style.background = "";
+    }
+    settings.selectedTheme = name;
+    saveSettings();
+  }
+
+  // ХУК НА МИКРОФОН
+  const origGUM = navigator.mediaDevices.getUserMedia.bind(
+    navigator.mediaDevices,
+  );
+  navigator.mediaDevices.getUserMedia = async (constraints) => {
+    // Останавливаем превью, если оно было включено
+    AudioEngine.stopPreview();
+
+    if (constraints?.audio) {
+      constraints.audio = {
+        ...constraints.audio,
+        autoGainControl: false,
+        noiseSuppression: settings.noiseSuppression,
+        echoCancellation: false,
+      };
+    }
+    try {
+      const stream = await origGUM(constraints);
+      globalMicStreamOrig = stream;
+
+      // BYPASS LOGIC: Если эффекты выключены, отдаем оригинал (Защита от тишины)
+      if (!settings.voicePitch && !settings.voiceEnhance) {
+        // Если нужен лупбэк, подключаем его параллельно
+        if (settings.enableLoopback) AudioEngine.updateChain(stream);
+        return stream;
+      }
+
+      // Если эффекты включены, обрабатываем
+      await AudioEngine.updateChain(stream);
+      const stable = await AudioEngine.getStableStream();
+      if (isMicMuted) toggleMicState();
+      return stable;
+    } catch (e) {
+      console.error(e);
+      throw e;
+    }
+  };
+
+  function toggleMicState() {
+    if (globalMicStreamOrig)
+      globalMicStreamOrig
+        .getAudioTracks()
+        .forEach((t) => (t.enabled = !isMicMuted));
+  }
+
+  function toggleHeadState() {
+    const audio = document.querySelector("audio#audioStream");
+    if (audio) audio.muted = isHeadphonesMuted;
+    if (isHeadphonesMuted && !isMicMuted) {
+      isMicMuted = true;
+      toggleMicState();
+    }
+  }
+
+  let obsTimer;
+  const observer = new MutationObserver(() => {
+    if (obsTimer) clearTimeout(obsTimer);
+    obsTimer = setTimeout(() => {
+      if (isAutoModeEnabled) clickSearch();
+      const audio = document.querySelector("audio#audioStream");
+      if (audio && !audio.dataset.inited) {
+        audio.dataset.inited = "true";
+        if (audio.srcObject) startAutoVolume(audio.srcObject);
+      }
+      const timer = document.querySelector(".callScreen__time, .timer-label");
+      if (timer && timer.textContent === "00:00" && !conversationTimer) {
+        soundStart.play().catch(() => {});
+        conversationTimer = true;
+      } else if (!timer && conversationTimer) {
+        soundEnd.play().catch(() => {});
+        conversationTimer = null;
+        settings.conversationCount++;
+        saveSettings();
+      }
+    }, 150);
+  });
+
+  function clickSearch() {
+    const btn =
+      document.getElementById("searchCompanyBtn") ||
+      document.querySelector(
+        "button.callScreen__findBtn, button.go-scan-button, .scan-button",
+      );
+    if (btn && btn.offsetParent) btn.click();
+  }
+
+  function initSpeech() {
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.lang = "ru-RU";
+    recognition.onresult = (e) => {
+      const t = e.results[e.results.length - 1][0].transcript.toLowerCase();
+      if (CONFIG.voiceCommands.skip.some((w) => t.includes(w))) skip();
+      if (CONFIG.voiceCommands.stop.some((w) => t.includes(w))) {
+        isAutoModeEnabled = false;
+        skip();
+      }
+      if (CONFIG.voiceCommands.start.some((w) => t.includes(w))) {
+        isAutoModeEnabled = true;
+        clickSearch();
+      }
+    };
+    recognition.onend = () => {
+      if (settings.voiceControl) recognition.start();
+    };
+  }
+
+  function skip() {
+    const btn = document.querySelector(
+      "button.callScreen__cancelCallBtn, button.stop-talk-button",
+    );
+    if (btn) {
+      btn.click();
+      setTimeout(() => {
+        const confirm = document.querySelector("button.swal2-confirm");
+        if (confirm) confirm.click();
+      }, 300);
+    }
+  }
+
+  function initParticles() {
+    const c = document.createElement("canvas");
+    c.style.cssText =
+      "position:fixed;top:0;left:0;width:100%;height:100%;z-index:-1;pointer-events:none;opacity:0;transition:opacity 2s;";
+    document.body.prepend(c);
+    setTimeout(() => (c.style.opacity = "1"), 100);
+    const ctx = c.getContext("2d");
+    let w,
+      h,
+      parts = [];
+    const resize = () => {
+      w = c.width = window.innerWidth;
+      h = c.height = window.innerHeight;
+    };
+    window.onresize = resize;
+    resize();
+    class P {
+      constructor() {
+        this.x = Math.random() * w;
+        this.y = Math.random() * h;
+        this.vx = (Math.random() - 0.5) * 0.2;
+        this.vy = (Math.random() - 0.5) * 0.2;
+      }
+      up() {
+        this.x += this.vx;
+        this.y += this.vy;
+        if (this.x < 0 || this.x > w) this.vx *= -1;
+        if (this.y < 0 || this.y > h) this.vy *= -1;
+      }
+      dr() {
+        ctx.fillStyle = "rgba(88,166,255,0.4)";
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    for (let i = 0; i < 70; i++) parts.push(new P());
+    function loop() {
+      ctx.clearRect(0, 0, w, h);
+      parts.forEach((p, i) => {
+        p.up();
+        p.dr();
+        for (let j = i; j < parts.length; j++) {
+          let dx = p.x - parts[j].x,
+            dy = p.y - parts[j].y,
+            d = Math.sqrt(dx * dx + dy * dy);
+          if (d < 130) {
+            ctx.strokeStyle = `rgba(88,166,255,${0.15 * (1 - d / 130)})`;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(parts[j].x, parts[j].y);
+            ctx.stroke();
+          }
         }
-        for(let i=0;i<70;i++) parts.push(new P());
-        function loop() {
-            ctx.clearRect(0,0,w,h);
-            parts.forEach((p,i) => {
-                p.up(); p.dr();
-                for(let j=i; j<parts.length; j++) {
-                    let dx=p.x-parts[j].x, dy=p.y-parts[j].y, d=Math.sqrt(dx*dx+dy*dy);
-                    if(d<130) { ctx.strokeStyle=`rgba(88,166,255,${0.15*(1-d/130)})`; ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(parts[j].x,parts[j].y); ctx.stroke(); }
-                }
-            });
-            requestAnimationFrame(loop);
-        }
-        loop();
+      });
+      requestAnimationFrame(loop);
     }
+    loop();
+  }
 
-    function init() {
-        applyTheme(settings.selectedTheme);
-        createUI();
-        initParticles();
-        observer.observe(document.body, {childList:true, subtree:true});
-        if(settings.voiceControl) { initSpeech(); recognition.start(); }
-        const origPlay = HTMLAudioElement.prototype.play;
-        HTMLAudioElement.prototype.play = function() {
-            if(this.src?.includes('connect.mp3')) return Promise.resolve();
-            return origPlay.apply(this, arguments);
-        };
+  function init() {
+    applyTheme(settings.selectedTheme);
+    createUI();
+    initParticles();
+    observer.observe(document.body, { childList: true, subtree: true });
+    if (settings.voiceControl) {
+      initSpeech();
+      if (recognition) recognition.start();
     }
+    const origPlay = HTMLAudioElement.prototype.play;
+    HTMLAudioElement.prototype.play = function () {
+      if (this.src?.includes("connect.mp3")) return Promise.resolve();
+      return origPlay.apply(this, arguments);
+    };
+  }
 
-    if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', init);
-    else init();
-
+  if (document.readyState === "loading")
+    document.addEventListener("DOMContentLoaded", init);
+  else init();
 })();
