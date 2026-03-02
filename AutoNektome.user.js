@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      5.1
-// @description  Автоматический переход, настройки звука, голосовое управление, улучшенный UI и адаптивность для nekto.me audiochat
+// @version      6.1
+// @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер, авто-скип и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat
 // @grant        none
@@ -170,6 +170,13 @@
             const ctx = await this.getContext();
             if (!ctx) return false;
 
+            // Firefox/Safari: проверяем поддержку AudioWorklet
+            if (!ctx.audioWorklet) {
+                Utils.log('AudioWorklet не поддерживается в этом браузере', 'warn');
+                Toast.show('Изменение голоса недоступно в этом браузере', 'warning');
+                return false;
+            }
+
             const workletCode = `
                 class PitchShiftProcessor extends AudioWorkletProcessor {
                     constructor() { super(); this.size=2048; this.buffer=new Float32Array(this.size); this.w=0; this.r=0; this.pitch=1.0; this.port.onmessage=e=>{this.pitch=Math.max(0.5,Math.min(2.0,e.data));}; }
@@ -178,13 +185,18 @@
                 registerProcessor('pitch-shift-processor', PitchShiftProcessor);
             `;
             try {
-                const blob = new Blob([workletCode], { type: "application/javascript" });
+                const blob = new Blob([workletCode.trim()], { type: 'application/javascript' });
                 const url = URL.createObjectURL(blob);
                 await ctx.audioWorklet.addModule(url);
                 URL.revokeObjectURL(url);
                 this.workletLoaded = true;
+                Utils.log('AudioWorklet загружен', 'success');
                 return true;
-            } catch (e) { Utils.log('AudioWorklet error: ' + e.message, 'warn'); return false; }
+            } catch (e) {
+                Utils.log('AudioWorklet error: ' + e.message, 'warn');
+                Toast.show('Ошибка инициализации изменения голоса', 'warning');
+                return false;
+            }
         },
 
         // Полная очистка перед новым звонком
@@ -196,12 +208,11 @@
             safeDisconnect(this.destNode);
             Object.values(this.nodes).forEach(safeDisconnect);
 
-            // Обнуляем узлы (кроме эффектов, их можно переиспользовать)
+            // Обнуляем ВСЕ узлы — filter/comp пересоздаются для надёжности в Firefox
             this.sourceNode = null;
             this.destNode = null;
             this.gainNode = null;
-            this.nodes.pitch = null; // Pitch нужно пересоздавать
-            this.nodes.loopGain = null;
+            this.nodes = { pitch: null, comp: null, filter: null, loopGain: null };
 
             this.rawStream = null;
             this.activeStream = null;
@@ -317,13 +328,24 @@
         },
 
         async startPreview() {
+            // Не запускать preview если идёт реальный звонок
+            if (this.activeStream && this.activeStream !== this.previewStream) return;
             this.stopPreview();
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: settings.noiseSuppression } });
-                this.previewStream = stream;
-                await this.initWorklet();
-                await this.setInputStream(stream);
-            } catch (e) { Toast.show('Ошибка микрофона', 'error'); }
+                if (settings.voicePitch) await this.initWorklet();
+                // Используем ORIGINAL getUserMedia — мимо hook, чтобы избежать двойного setInputStream
+                const fn = MediaHook.original || navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+                const constraints = {
+                    audio: {
+                        echoCancellation: { exact: false },
+                        autoGainControl: { exact: false },
+                        noiseSuppression: settings.noiseSuppression
+                    }
+                };
+                const rawStream = await fn(constraints);
+                this.previewStream = rawStream;
+                await this.setInputStream(rawStream);
+            } catch (e) { Utils.log('startPreview error: ' + e.message, 'error'); Toast.show('Ошибка микрофона', 'error'); }
         },
 
         stopPreview() {
@@ -390,10 +412,12 @@
             this.currentSessionTime = 0;
 
             // Запуск таймера реального времени
+            this._autoSkipFired = false;
             this.timerInterval = setInterval(() => {
                 this.currentSessionTime = Math.floor((Date.now() - this.conversationStartTime) / 1000);
                 UI.updateLiveTimer();
-                if (settings.autoSkipAfter > 0 && this.currentSessionTime >= settings.autoSkipAfter) {
+                if (!this._autoSkipFired && settings.autoSkipAfter > 0 && this.currentSessionTime >= settings.autoSkipAfter) {
+                    this._autoSkipFired = true;
                     Actions.skip();
                 }
             }, 1000);
@@ -488,8 +512,18 @@
             return true;
         },
         toggle(enable) {
-            if (enable) { if (!State.recognition && !this.init()) return; try { State.recognition.start(); } catch (e) { } }
-            else { try { State.recognition?.stop(); } catch (e) { } }
+            if (enable) {
+                if (!State.recognition && !this.init()) {
+                    // SR API недоступен — сбросить у UI
+                    settings.voiceControl = false;
+                    UI.updateToggle('voiceControl', false);
+                    Toast.show('Голос. управление не поддерживается браузером', 'error');
+                    return;
+                }
+                try { State.recognition.start(); } catch (e) { }
+            } else {
+                try { State.recognition?.stop(); } catch (e) { }
+            }
         }
     };
 
@@ -523,7 +557,9 @@
                     if (btn && btn.offsetParent !== null) setTimeout(() => Actions.clickSearch(), 500);
                 }
                 const timerEl = Utils.getEl("timer");
-                const hasTimer = !!timerEl && timerEl.textContent && timerEl.textContent !== "";
+                // Более строгая проверка: элемент видим, содержит время (00:00), не пустой
+                const timerText = timerEl?.textContent?.trim() || '';
+                const hasTimer = !!timerEl && timerEl.offsetParent !== null && /^\d{1,2}:\d{2}/.test(timerText);
                 if (hasTimer && !this.lastTimerState) State.startConversation();
                 else if (!hasTimer && this.lastTimerState) State.endConversation();
                 this.lastTimerState = hasTimer;
@@ -540,6 +576,120 @@
     };
 
     // ==========================================
+    // IP CHECKER (WebRTC ICE)
+    // ==========================================
+    const IPChecker = {
+        lastIP: null,
+        elId: 'an-ip-display',
+
+        // Перехватываем RTCPeerConnection для перехвата ICE-кандидатов
+        init() {
+            const OrigRTC = window.RTCPeerConnection;
+            if (!OrigRTC) return;
+            const self = this;
+            window.RTCPeerConnection = function (...args) {
+                const pc = new OrigRTC(...args);
+                const origSetRemote = pc.setRemoteDescription.bind(pc);
+                pc.setRemoteDescription = async function (desc) {
+                    const result = await origSetRemote(desc);
+                    // Извлекаем IP из SDP
+                    if (desc?.sdp) {
+                        const ips = self._extractIPsFromSDP(desc.sdp);
+                        if (ips.length > 0) self._onNewIP(ips[0], 'SDP');
+                    }
+                    return result;
+                };
+                pc.addEventListener('icecandidate', (e) => {
+                    if (e.candidate?.candidate) {
+                        const ip = self._extractIPFromCandidate(e.candidate.candidate);
+                        if (ip) self._onNewIP(ip, 'ICE');
+                    }
+                });
+                return pc;
+            };
+            // Копируем прототип чтобы instanceof работал
+            window.RTCPeerConnection.prototype = OrigRTC.prototype;
+            Utils.log('IPChecker: RTCPeerConnection hook active', 'info');
+        },
+
+        reset() {
+            this.lastIP = null;
+            const el = document.getElementById(this.elId);
+            if (el) el.innerHTML = '<span style="color:#484f58">—</span>';
+        },
+
+        _extractIPsFromSDP(sdp) {
+            const ips = [];
+            // c= линии SDP
+            const cLines = sdp.match(/^c=IN IP4 (\d+\.\d+\.\d+\.\d+)/mg) || [];
+            cLines.forEach(l => {
+                const ip = l.split(' ').pop();
+                if (!this._isPrivateIP(ip) && !ips.includes(ip)) ips.push(ip);
+            });
+            return ips;
+        },
+
+        _extractIPFromCandidate(candidate) {
+            // a=candidate:... UDP ... <ip> <port>
+            const m = candidate.match(/(\d+\.\d+\.\d+\.\d+)/);
+            if (m) {
+                const ip = m[1];
+                return this._isPrivateIP(ip) ? null : ip;
+            }
+            return null;
+        },
+
+        _isPrivateIP(ip) {
+            return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|0\.0\.0\.0|169\.254\.)/.test(ip);
+        },
+
+        _onNewIP(ip, source) {
+            if (ip === this.lastIP) return;
+            this.lastIP = ip;
+            Utils.log(`Server IP (${source}): ${ip}`, 'success');
+            // Сразу показываем IP без гео, потом догружаем
+            this._updateDisplay(ip, '🌐', '');
+            this._fetchGeo(ip);
+        },
+
+        async _fetchGeo(ip) {
+            try {
+                const ctrl = new AbortController();
+                const tid = setTimeout(() => ctrl.abort(), 5000);
+                const r = await fetch(`https://ipapi.co/${ip}/json/`, { signal: ctrl.signal });
+                clearTimeout(tid);
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                const d = await r.json();
+                if (d.error) throw new Error(d.reason || 'geo error');
+                const flag = d.country_code ? this._countryToFlag(d.country_code) : '🌐';
+                const city = d.city || '';
+                const country = d.country_name || d.country_code || '';
+                const geo = [city, country].filter(Boolean).join(', ');
+                Utils.log(`Server geo: ${flag} ${ip} — ${geo}`, 'success');
+                Toast.show(`${flag} ${ip}  ${geo}`, 'info', 5000);
+                this._updateDisplay(ip, flag, geo);
+            } catch (e) {
+                if (e.name !== 'AbortError') Utils.log('Geo lookup failed: ' + e.message, 'warn');
+                Toast.show(`🌐 ${ip}`, 'info', 3000);
+            }
+        },
+
+        _countryToFlag(cc) {
+            try {
+                return [...cc.toUpperCase()].map(c => String.fromCodePoint(c.charCodeAt(0) + 127397)).join('');
+            } catch { return '🌐'; }
+        },
+
+        _updateDisplay(ip, flag, geo) {
+            const el = document.getElementById(this.elId);
+            if (!el) return;
+            const flagHtml = flag ? `<span style="font-size:16px;line-height:1">${flag}</span>` : '';
+            const geoHtml = geo ? `<span class="an-ip-geo">${geo}</span>` : '';
+            el.innerHTML = `${flagHtml}<span class="an-ip-addr">${ip}</span>${geoHtml}`;
+        }
+    };
+
+    // ==========================================
     // ПЕРЕХВАТ getUserMedia
     // ==========================================
     const MediaHook = {
@@ -548,8 +698,14 @@
             this.original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
             navigator.mediaDevices.getUserMedia = async (constraints) => {
                 AudioEngine.stopPreview();
+                IPChecker.reset(); // Сброс IP при каждом новом подключении
                 if (constraints?.audio) {
-                    const defaults = { autoGainControl: false, noiseSuppression: settings.noiseSuppression, echoCancellation: false };
+                    // exact: false — отключает нативную обработку в Firefox надёжнее
+                    const defaults = {
+                        autoGainControl: { exact: false },
+                        echoCancellation: { exact: false },
+                        noiseSuppression: settings.noiseSuppression
+                    };
                     constraints.audio = typeof constraints.audio === 'object' ? { ...constraints.audio, ...defaults } : defaults;
                 }
                 try {
@@ -738,14 +894,14 @@
                 if (v && !AudioEngine.activeStream) AudioEngine.startPreview();
                 else { AudioEngine.rebuildChain(); if (!v && !AudioEngine.activeStream) AudioEngine.stopPreview(); }
             });
-            const loopSub = this.createSubPanel("sub-loopback", settings.enableLoopback, "Громкость");
+            const loopSub = this.createSubPanel("sub-loopback", settings.enableLoopback, "🔊 Громкость в ухо");
             loopSub.appendChild(this.createRange(0, 2, 0.1, settings.gainValue, (v) => { settings.gainValue = v; Settings.save(); AudioEngine.updateLiveParams(); }));
             body.appendChild(loopSub);
 
-            // Громкость микрофона
+            // Усиление исходящего сигнала (то, что слышит собеседник)
             const mgRow = document.createElement("div");
             mgRow.className = "an-row";
-            mgRow.innerHTML = `<span>Громкость микрофона</span><span id="an-micgain-val" style="font-size:11px;color:#58a6ff">${Math.round(settings.micGain * 100)}%</span>`;
+            mgRow.innerHTML = `<span>🎙️ Усиление микрофона <span style="font-size:10px;color:#484f58">→ собеседнику</span></span><span id="an-micgain-val" style="font-size:11px;color:#58a6ff">${Math.round(settings.micGain * 100)}%</span>`;
             body.appendChild(mgRow);
             body.appendChild(this.createRange(0, 2, 0.05, settings.micGain, (v) => {
                 settings.micGain = v; Settings.save(); AudioEngine.updateLiveParams();
@@ -765,6 +921,16 @@
 
             this.renderToggle(body, "Шумоподавление", "noiseSuppression", settings.noiseSuppression, (v) => { settings.noiseSuppression = v; Settings.save(); });
             this.renderToggle(body, "Голос. управление", "voiceControl", settings.voiceControl, (v) => { settings.voiceControl = v; Settings.save(); VoiceControl.toggle(v); });
+
+            // IP-чекер панель
+            const ipBlock = document.createElement('div');
+            ipBlock.className = 'an-ip-block';
+            ipBlock.innerHTML = `
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;opacity:0.5"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                <span style="flex-shrink:0;color:#7d8590">Сервер:</span>
+                <span id="an-ip-display"><span style="color:#484f58">—</span></span>
+            `;
+            body.appendChild(ipBlock);
 
             body.appendChild(this.createDivider('Вид'));
             this.renderToggle(body, "Анимация фона", "particlesEnabled", settings.particlesEnabled, (v) => { settings.particlesEnabled = v; Settings.save(); Particles.toggle(v); });
@@ -798,7 +964,7 @@
                 @keyframes anPulse{0%,100%{opacity:1}50%{opacity:0.4}}
                 @keyframes anBlink{0%,100%{opacity:1}50%{opacity:0.3}}
 
-                #an-root{position:fixed;top:20px;right:20px;z-index:10000;width:280px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:rgba(17,20,24,0.96);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.08);border-radius:14px;color:#e6edf3;box-shadow:0 8px 32px rgba(0,0,0,0.4);font-size:13px;overflow:hidden}
+                #an-root{position:fixed;top:20px;right:20px;z-index:10000;width:320px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:rgba(17,20,24,0.96);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.08);border-radius:14px;color:#e6edf3;box-shadow:0 8px 32px rgba(0,0,0,0.4);font-size:13px;overflow:hidden}
                 @media(max-width:600px){#an-root{top:auto;bottom:0;right:0;left:0;width:100%;border-radius:14px 14px 0 0;max-height:85vh}}
                 .an-head{padding:12px 14px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;border-bottom:1px solid rgba(255,255,255,0.06)}
                 .an-head-left{display:flex;align-items:center;gap:8px}
@@ -820,6 +986,11 @@
                 .an-stat-value svg{opacity:0.6}
                 .an-stat-label{font-size:9px;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px}
                 .an-stat-live{color:#3fb950!important;animation:anBlink 1s infinite}
+
+                .an-ip-block{font-size:11px;color:#7d8590;background:rgba(0,0,0,0.25);border:1px solid rgba(88,166,255,0.1);border-radius:8px;padding:8px 12px;margin-bottom:8px;display:flex;align-items:center;gap:8px;min-height:34px}
+                #an-ip-display{display:flex;align-items:center;gap:6px;flex:1}
+                .an-ip-addr{color:#58a6ff;font-family:monospace;font-size:12px;font-weight:600;letter-spacing:0.5px}
+                .an-ip-geo{color:#7d8590;font-size:10px;margin-left:4px}
 
                 .an-controls{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px}
                 .an-btn{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);color:#e6edf3;border-radius:10px;padding:10px 4px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;transition:all 0.15s;font-size:10px}
@@ -956,6 +1127,7 @@
         Utils.log('Запуск...', 'info');
         Settings.load();
         Sounds.init();
+        IPChecker.init();
         MediaHook.init();
         Hotkeys.init();
 
