@@ -14,8 +14,9 @@
 (function () {
     "use strict";
 
-    const VERSION = "5.1";
-    const STORAGE_KEY = "AutoNektomeSettings_v3";
+    const VERSION = "6.0";
+    const STORAGE_KEY = "AutoNektomeSettings_v4";
+    const MIN_CONVERSATION_SECONDS = 3;
 
     // SVG Иконки (минималистичные)
     const ICONS = {
@@ -93,8 +94,10 @@
     const defaultSettings = {
         enableLoopback: false, gainValue: 1.0, voicePitch: false, pitchLevel: 0.5,
         voiceEnhance: false, noiseSuppression: true, voiceControl: false,
-        conversationCount: 0, totalTalkTime: 0, selectedTheme: "Original",
-        particlesEnabled: true, isCollapsed: false, soundsEnabled: true, hotkeysEnabled: true
+        conversationCount: 0, totalTalkTime: 0, conversationHistory: [],
+        selectedTheme: "Original", particlesEnabled: true, isCollapsed: false,
+        soundsEnabled: true, hotkeysEnabled: true,
+        autoSkipAfter: 0, micGain: 1.0
     };
 
     let settings = { ...defaultSettings };
@@ -227,7 +230,7 @@
 
             // Новый gain node
             this.gainNode = ctx.createGain();
-            this.gainNode.gain.value = 1.0;
+            this.gainNode.gain.value = settings.micGain;
 
             // Новый source
             this.sourceNode = ctx.createMediaStreamSource(stream);
@@ -333,6 +336,7 @@
         updateLiveParams() {
             if (this.nodes.pitch) this.nodes.pitch.port.postMessage(settings.pitchLevel + 0.5);
             if (this.nodes.loopGain) this.nodes.loopGain.gain.value = settings.gainValue;
+            if (this.gainNode) this.gainNode.gain.value = settings.micGain;
         }
     };
 
@@ -349,6 +353,8 @@
         currentSessionTime: 0,
         timerInterval: null,
         recognition: null,
+        sessionCount: 0,
+        sessionTalkTime: 0,
 
         setAutoMode(enabled) {
             this.isAutoMode = enabled;
@@ -387,6 +393,9 @@
             this.timerInterval = setInterval(() => {
                 this.currentSessionTime = Math.floor((Date.now() - this.conversationStartTime) / 1000);
                 UI.updateLiveTimer();
+                if (settings.autoSkipAfter > 0 && this.currentSessionTime >= settings.autoSkipAfter) {
+                    Actions.skip();
+                }
             }, 1000);
 
             UI.updateStatus('talking');
@@ -398,7 +407,6 @@
         endConversation() {
             if (!this.isInConversation) return;
 
-            // Остановка таймера
             if (this.timerInterval) {
                 clearInterval(this.timerInterval);
                 this.timerInterval = null;
@@ -406,10 +414,17 @@
 
             if (this.conversationStartTime) {
                 const duration = Math.floor((Date.now() - this.conversationStartTime) / 1000);
-                settings.totalTalkTime += duration;
-                settings.conversationCount++;
-                Settings.save();
-                Toast.show(`Разговор: ${Utils.formatTime(duration)}`, 'info');
+                if (duration >= MIN_CONVERSATION_SECONDS) {
+                    settings.totalTalkTime += duration;
+                    settings.conversationCount++;
+                    this.sessionCount++;
+                    this.sessionTalkTime += duration;
+                    if (!Array.isArray(settings.conversationHistory)) settings.conversationHistory = [];
+                    settings.conversationHistory.unshift({ date: Date.now(), duration });
+                    if (settings.conversationHistory.length > 50) settings.conversationHistory.pop();
+                    Settings.save();
+                    Toast.show(`Разговор: ${Utils.formatTime(duration)}`, 'info');
+                }
             }
 
             this.isInConversation = false;
@@ -465,7 +480,11 @@
                 if (VOICE_COMMANDS.start.some(w => t.includes(w))) State.setAutoMode(true);
             };
             State.recognition.onend = () => { if (settings.voiceControl) setTimeout(() => { try { State.recognition?.start(); } catch (e) { } }, 100); };
-            State.recognition.onerror = () => { };
+            State.recognition.onerror = (e) => {
+                if (e.error === 'not-allowed') Toast.show('Нет доступа к микрофону (голос. управление)', 'error');
+                else if (e.error === 'network') Toast.show('Ошибка сети (голос. управление)', 'warning');
+                else if (e.error !== 'aborted' && e.error !== 'no-speech') Utils.log('SpeechRecognition error: ' + e.error, 'warn');
+            };
             return true;
         },
         toggle(enable) {
@@ -549,6 +568,7 @@
     // ==========================================
     const Themes = {
         styleEl: null,
+        _cache: {},
         apply(name) {
             settings.selectedTheme = name; Settings.save();
             if (this.styleEl) { this.styleEl.remove(); this.styleEl = null; }
@@ -560,7 +580,15 @@
                 document.documentElement.style.background = "#0d1117";
                 document.body.style.background = "#0d1117";
                 this.styleEl = document.createElement("style");
-                fetch(THEMES[name]).then(r => r.text()).then(css => { if (this.styleEl) { this.styleEl.textContent = css; document.head.append(this.styleEl); } }).catch(() => { });
+                document.head.append(this.styleEl);
+                if (this._cache[name]) {
+                    this.styleEl.textContent = this._cache[name];
+                } else {
+                    fetch(THEMES[name])
+                        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+                        .then(css => { this._cache[name] = css; if (this.styleEl) this.styleEl.textContent = css; })
+                        .catch(e => { Utils.log('Ошибка загрузки темы: ' + e.message, 'error'); Toast.show('Ошибка загрузки темы', 'error'); });
+                }
             }
         }
     };
@@ -575,7 +603,8 @@
             this.canvas.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;z-index:-1;pointer-events:none;opacity:0;transition:opacity 1s;";
             document.body.prepend(this.canvas);
             this.ctx = this.canvas.getContext("2d");
-            window.addEventListener('resize', () => this.resize());
+            this._resizeHandler = () => this.resize();
+            window.addEventListener('resize', this._resizeHandler);
             this.resize();
             if (settings.particlesEnabled) this.toggle(true);
         },
@@ -639,11 +668,34 @@
                 </div>
             `;
             head.onclick = (e) => {
-                if (e.target.closest('.an-status')) return;
+                if (this._wasDragged || e.target.closest('.an-status')) return;
                 this.root.classList.toggle("an-minimized");
                 settings.isCollapsed = this.root.classList.contains("an-minimized");
                 Settings.save();
             };
+            // Draggable
+            this._wasDragged = false;
+            head.addEventListener('mousedown', (e) => {
+                if (e.target.closest('.an-status')) return;
+                this._wasDragged = false;
+                const startX = e.clientX, startY = e.clientY;
+                const rect = this.root.getBoundingClientRect();
+                const origLeft = rect.left, origTop = rect.top;
+                const onMove = (me) => {
+                    const dx = me.clientX - startX, dy = me.clientY - startY;
+                    if (!this._wasDragged && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) this._wasDragged = true;
+                    if (this._wasDragged) {
+                        const maxX = window.innerWidth - this.root.offsetWidth;
+                        const maxY = window.innerHeight - this.root.offsetHeight;
+                        this.root.style.left = Math.max(0, Math.min(maxX, origLeft + dx)) + 'px';
+                        this.root.style.top = Math.max(0, Math.min(maxY, origTop + dy)) + 'px';
+                        this.root.style.right = 'auto';
+                    }
+                };
+                const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            });
             this.statusEl = head.querySelector('#an-status');
 
             const body = document.createElement("div");
@@ -669,6 +721,15 @@
             this.renderToggle(body, "Авторежим", "autoMode", State.isAutoMode, (v) => State.setAutoMode(v));
             this.renderToggle(body, "Звуки", "soundsEnabled", settings.soundsEnabled, (v) => { settings.soundsEnabled = v; Settings.save(); });
             this.renderToggle(body, "Горячие клавиши", "hotkeysEnabled", settings.hotkeysEnabled, (v) => { settings.hotkeysEnabled = v; Settings.save(); });
+            // Авто-скип
+            const asRow = document.createElement("div");
+            asRow.className = "an-row";
+            asRow.innerHTML = `<span>Авто-скип</span><span id="an-autoskip-val" style="font-size:11px;color:#58a6ff">${settings.autoSkipAfter === 0 ? 'Выкл' : settings.autoSkipAfter + 'с'}</span>`;
+            body.appendChild(asRow);
+            body.appendChild(this.createRange(0, 300, 10, settings.autoSkipAfter, (v) => {
+                settings.autoSkipAfter = v; Settings.save();
+                document.getElementById('an-autoskip-val').textContent = v === 0 ? 'Выкл' : v + 'с';
+            }));
 
             body.appendChild(this.createDivider('Аудио'));
             this.renderToggle(body, "Самопрослушивание", "enableLoopback", settings.enableLoopback, (v) => {
@@ -680,6 +741,16 @@
             const loopSub = this.createSubPanel("sub-loopback", settings.enableLoopback, "Громкость");
             loopSub.appendChild(this.createRange(0, 2, 0.1, settings.gainValue, (v) => { settings.gainValue = v; Settings.save(); AudioEngine.updateLiveParams(); }));
             body.appendChild(loopSub);
+
+            // Громкость микрофона
+            const mgRow = document.createElement("div");
+            mgRow.className = "an-row";
+            mgRow.innerHTML = `<span>Громкость микрофона</span><span id="an-micgain-val" style="font-size:11px;color:#58a6ff">${Math.round(settings.micGain * 100)}%</span>`;
+            body.appendChild(mgRow);
+            body.appendChild(this.createRange(0, 2, 0.05, settings.micGain, (v) => {
+                settings.micGain = v; Settings.save(); AudioEngine.updateLiveParams();
+                document.getElementById('an-micgain-val').textContent = Math.round(v * 100) + '%';
+            }));
 
             this.renderToggle(body, "Студийный звук", "voiceEnhance", settings.voiceEnhance, (v) => { settings.voiceEnhance = v; Settings.save(); AudioEngine.rebuildChain(); });
             this.renderToggle(body, "Изменение голоса", "voicePitch", settings.voicePitch, (v) => {
@@ -852,14 +923,15 @@
         updateStats() {
             if (!this.statsEl) return;
             const liveTime = State.isInConversation ? State.currentSessionTime : 0;
+            const sessionLabel = State.sessionCount > 0 ? `+${State.sessionCount}` : '';
             this.statsEl.innerHTML = `
                 <div class="an-stat-item">
-                    <span class="an-stat-value">${ICONS.chat} ${settings.conversationCount}</span>
-                    <span class="an-stat-label">Разговоров</span>
+                    <span class="an-stat-value">${ICONS.chat} ${settings.conversationCount}<span style="font-size:10px;color:#3fb950;margin-left:2px">${sessionLabel}</span></span>
+                    <span class="an-stat-label">Разговоры</span>
                 </div>
                 <div class="an-stat-item">
                     <span class="an-stat-value ${State.isInConversation ? 'an-stat-live' : ''}" id="an-live-timer">${Utils.formatTime(liveTime)}</span>
-                    <span class="an-stat-label">${State.isInConversation ? 'Сейчас' : 'Текущий'}</span>
+                    <span class="an-stat-label">${State.isInConversation ? 'Сейчас' : 'Сессия: ' + Utils.formatTime(State.sessionTalkTime)}</span>
                 </div>
                 <div class="an-stat-item">
                     <span class="an-stat-value">${ICONS.clock} ${Utils.formatTime(settings.totalTalkTime)}</span>
