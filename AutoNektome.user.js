@@ -97,7 +97,8 @@
         conversationCount: 0, totalTalkTime: 0, conversationHistory: [],
         selectedTheme: "Original", particlesEnabled: true, isCollapsed: false,
         soundsEnabled: true, hotkeysEnabled: true,
-        autoSkipAfter: 0, micGain: 1.0
+        autoSkipAfter: 0, micGain: 1.0,
+        lagEnabled: false, lagIntensity: 0.5
     };
 
     let settings = { ...defaultSettings };
@@ -147,7 +148,7 @@
         sourceNode: null,
         destNode: null,
         gainNode: null,
-        nodes: { pitch: null, comp: null, filter: null, loopGain: null },
+        nodes: { pitch: null, comp: null, filter: null, loopGain: null, lag: null },
         previewStream: null,
         activeStream: null,
         rawStream: null,
@@ -183,6 +184,40 @@
                     process(I,O) { const i=I[0]?.[0],o=O[0]?.[0]; if(!i||!o)return true; const L=this.buffer.length; for(let j=0;j<i.length;j++){this.buffer[this.w]=i[j];o[j]=this.buffer[Math.floor(this.r)%L];this.w=(this.w+1)%L;this.r=(this.r+this.pitch)%L;} return true; }
                 }
                 registerProcessor('pitch-shift-processor', PitchShiftProcessor);
+
+                class LagProcessor extends AudioWorkletProcessor {
+                    constructor() {
+                        super();
+                        this.intensity = 0.5;
+                        this.frozenFrame = new Float32Array(128);
+                        this.freezeCount = 0;
+                        this.silenceCount = 0;
+                        this.port.onmessage = (e) => { this.intensity = Math.max(0, Math.min(1, e.data)); };
+                    }
+                    process(inputs, outputs) {
+                        const inp = inputs[0]?.[0], out = outputs[0]?.[0];
+                        if (!inp || !out) return true;
+                        const k = this.intensity;
+                        if (this.freezeCount > 0) {
+                            for (let i = 0; i < out.length; i++) out[i] = this.frozenFrame[i % this.frozenFrame.length];
+                            this.freezeCount--;
+                        } else if (this.silenceCount > 0) {
+                            out.fill(0);
+                            this.silenceCount--;
+                        } else if (Math.random() < k * 0.12) {
+                            this.frozenFrame.set(inp.subarray(0, Math.min(128, inp.length)));
+                            this.freezeCount = Math.floor(Math.random() * 60 * k + 8);
+                            for (let i = 0; i < out.length; i++) out[i] = this.frozenFrame[i % this.frozenFrame.length];
+                        } else if (Math.random() < k * 0.06) {
+                            this.silenceCount = Math.floor(Math.random() * 30 * k + 4);
+                            out.fill(0);
+                        } else {
+                            out.set(inp.subarray(0, out.length));
+                        }
+                        return true;
+                    }
+                }
+                registerProcessor('lag-processor', LagProcessor);
             `;
             try {
                 const blob = new Blob([workletCode.trim()], { type: 'application/javascript' });
@@ -212,7 +247,7 @@
             this.sourceNode = null;
             this.destNode = null;
             this.gainNode = null;
-            this.nodes = { pitch: null, comp: null, filter: null, loopGain: null };
+            this.nodes = { pitch: null, comp: null, filter: null, loopGain: null, lag: null };
 
             this.rawStream = null;
             this.activeStream = null;
@@ -277,6 +312,7 @@
             if (this.nodes.pitch) safeDisconnect(this.nodes.pitch);
             if (this.nodes.filter) safeDisconnect(this.nodes.filter);
             if (this.nodes.comp) safeDisconnect(this.nodes.comp);
+            if (this.nodes.lag) safeDisconnect(this.nodes.lag);
             if (this.nodes.loopGain) safeDisconnect(this.nodes.loopGain);
 
             let currentNode = this.sourceNode;
@@ -311,6 +347,16 @@
                 } catch (e) { Utils.log('Pitch error: ' + e.message, 'error'); }
             }
 
+            // Лаги голоса
+            if (settings.lagEnabled && this.workletLoaded) {
+                try {
+                    this.nodes.lag = new AudioWorkletNode(ctx, "lag-processor");
+                    this.nodes.lag.port.postMessage(settings.lagIntensity);
+                    currentNode.connect(this.nodes.lag);
+                    currentNode = this.nodes.lag;
+                } catch (e) { Utils.log('Lag error: ' + e.message, 'error'); }
+            }
+
             // Финальное подключение к destination
             currentNode.connect(this.gainNode);
             this.gainNode.connect(this.destNode);
@@ -332,7 +378,7 @@
             if (this.activeStream && this.activeStream !== this.previewStream) return;
             this.stopPreview();
             try {
-                if (settings.voicePitch) await this.initWorklet();
+                if (settings.voicePitch || settings.lagEnabled) await this.initWorklet();
                 // Используем ORIGINAL getUserMedia — мимо hook, чтобы избежать двойного setInputStream
                 const fn = MediaHook.original || navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
                 const constraints = {
@@ -357,6 +403,7 @@
 
         updateLiveParams() {
             if (this.nodes.pitch) this.nodes.pitch.port.postMessage(settings.pitchLevel + 0.5);
+            if (this.nodes.lag) this.nodes.lag.port.postMessage(settings.lagIntensity);
             if (this.nodes.loopGain) this.nodes.loopGain.gain.value = settings.gainValue;
             if (this.gainNode) this.gainNode.gain.value = settings.micGain;
         }
@@ -710,7 +757,7 @@
                 }
                 try {
                     const rawStream = await this.original(constraints);
-                    if (settings.voicePitch) await AudioEngine.initWorklet();
+                    if (settings.voicePitch || settings.lagEnabled) await AudioEngine.initWorklet();
                     const outputStream = await AudioEngine.setInputStream(rawStream);
                     if (State.isMicMuted) rawStream.getAudioTracks().forEach(t => t.enabled = false);
                     return outputStream;
@@ -877,14 +924,16 @@
             this.renderToggle(body, "Авторежим", "autoMode", State.isAutoMode, (v) => State.setAutoMode(v));
             this.renderToggle(body, "Звуки", "soundsEnabled", settings.soundsEnabled, (v) => { settings.soundsEnabled = v; Settings.save(); });
             this.renderToggle(body, "Горячие клавиши", "hotkeysEnabled", settings.hotkeysEnabled, (v) => { settings.hotkeysEnabled = v; Settings.save(); });
-            // Авто-скип
+            // Авто-скип: скипает собеседника после N секунд разговора
             const asRow = document.createElement("div");
             asRow.className = "an-row";
-            asRow.innerHTML = `<span>Авто-скип</span><span id="an-autoskip-val" style="font-size:11px;color:#58a6ff">${settings.autoSkipAfter === 0 ? 'Выкл' : settings.autoSkipAfter + 'с'}</span>`;
+            asRow.title = "Автоматически скипает собеседника через указанное количество времени разговора. 0 = выключено.";
+            const fmtSkip = (v) => v === 0 ? 'Выкл' : (v >= 60 ? Math.floor(v / 60) + 'м' + (v % 60 ? ' ' + v % 60 + 'с' : '') : v + 'с');
+            asRow.innerHTML = `<span>Авто-скип <span style="font-size:10px;color:#484f58">→ скип через</span></span><span id="an-autoskip-val" style="font-size:11px;color:#58a6ff">${fmtSkip(settings.autoSkipAfter)}</span>`;
             body.appendChild(asRow);
-            body.appendChild(this.createRange(0, 300, 10, settings.autoSkipAfter, (v) => {
+            body.appendChild(this.createRange(0, 3600, 30, settings.autoSkipAfter, (v) => {
                 settings.autoSkipAfter = v; Settings.save();
-                document.getElementById('an-autoskip-val').textContent = v === 0 ? 'Выкл' : v + 'с';
+                document.getElementById('an-autoskip-val').textContent = fmtSkip(v);
             }));
 
             body.appendChild(this.createDivider('Аудио'));
@@ -912,8 +961,9 @@
             this.renderToggle(body, "Изменение голоса", "voicePitch", settings.voicePitch, (v) => {
                 settings.voicePitch = v; Settings.save();
                 document.getElementById("sub-pitch")?.classList.toggle("open", v);
-                if (v) AudioEngine.initWorklet();
-                AudioEngine.rebuildChain();
+                // initWorklet() — async! rebuildChain только ПОСЛЕ загрузки воркла
+                if (v) AudioEngine.initWorklet().then(() => AudioEngine.rebuildChain());
+                else AudioEngine.rebuildChain();
             });
             const pitchSub = this.createSubPanel("sub-pitch", settings.voicePitch, "Тональность");
             pitchSub.appendChild(this.createRange(0, 1, 0.05, settings.pitchLevel, (v) => { settings.pitchLevel = v; Settings.save(); AudioEngine.updateLiveParams(); }));
@@ -921,6 +971,25 @@
 
             this.renderToggle(body, "Шумоподавление", "noiseSuppression", settings.noiseSuppression, (v) => { settings.noiseSuppression = v; Settings.save(); });
             this.renderToggle(body, "Голос. управление", "voiceControl", settings.voiceControl, (v) => { settings.voiceControl = v; Settings.save(); VoiceControl.toggle(v); });
+
+            // Лаги голоса
+            this.renderToggle(body, "⚡ Лаги голоса", "lagEnabled", settings.lagEnabled, (v) => {
+                settings.lagEnabled = v; Settings.save();
+                document.getElementById("sub-lag")?.classList.toggle("open", v);
+                if (v) AudioEngine.initWorklet().then(() => AudioEngine.rebuildChain());
+                else AudioEngine.rebuildChain();
+            });
+            const lagSub = this.createSubPanel("sub-lag", settings.lagEnabled, "Интенсивность лагов");
+            const lagValSpan = document.createElement('span');
+            lagValSpan.id = 'an-lag-val';
+            lagValSpan.style.cssText = 'font-size:10px;color:#58a6ff;display:block;text-align:right;margin-bottom:4px';
+            lagValSpan.textContent = Math.round(settings.lagIntensity * 100) + '%';
+            lagSub.appendChild(lagValSpan);
+            lagSub.appendChild(this.createRange(0, 1, 0.05, settings.lagIntensity, (v) => {
+                settings.lagIntensity = v; Settings.save(); AudioEngine.updateLiveParams();
+                document.getElementById('an-lag-val').textContent = Math.round(v * 100) + '%';
+            }));
+            body.appendChild(lagSub);
 
             // IP-чекер панель
             const ipBlock = document.createElement('div');
