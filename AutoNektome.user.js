@@ -68,7 +68,7 @@
             voiceEnhance: false, noiseSuppression: true, voiceControl: false,
             soundsEnabled: true, hotkeysEnabled: true, autoSkipAfter: 0,
             micGain: 1.0, lagEnabled: false, lagIntensity: 0.5, enableIpChecker: false,
-            morseEnabled: true, morseUnit: 0.08, morseFrequency: 880, morseVolume: 0.28
+            morseEnabled: true, morseUnit: 0.08, morseFrequency: 880, morseVolume: 0.28, morseMonitorVolume: 0.18
         }
     };
 
@@ -76,7 +76,7 @@
         "enableLoopback", "gainValue", "voicePitch", "pitchLevel", "voiceEnhance",
         "noiseSuppression", "voiceControl", "autoSkipAfter", "micGain",
         "lagEnabled", "lagIntensity", "soundsEnabled", "morseEnabled",
-        "morseUnit", "morseFrequency", "morseVolume"
+        "morseUnit", "morseFrequency", "morseVolume", "morseMonitorVolume"
     ];
 
     const STATUS_META = {
@@ -170,6 +170,7 @@
         morseUnit: 0.08,
         morseFrequency: 880,
         morseVolume: 0.28,
+        morseMonitorVolume: 0.18,
         morseLastMessage: "SOS",
         compactMode: false,
         panelPosition: null,
@@ -530,6 +531,8 @@
     const Morse = {
         activeNodes: [],
         isSending: false,
+        monitorNodes: [],
+        liveTap: null,
 
         encode(text) {
             return (text || "")
@@ -544,6 +547,17 @@
             return settings.morseEnabled && AudioEngine.gainNode && State.isInConversation;
         },
 
+        attachToOutputs(gainNode) {
+            gainNode.connect(AudioEngine.gainNode);
+            if ((Number(settings.morseMonitorVolume) || 0) > 0 && AudioEngine.ctx?.destination) {
+                const monitor = AudioEngine.ctx.createGain();
+                monitor.gain.value = Number(settings.morseMonitorVolume) || 0.18;
+                gainNode.connect(monitor);
+                monitor.connect(AudioEngine.ctx.destination);
+                this.monitorNodes.push(monitor);
+            }
+        },
+
         stop() {
             this.activeNodes.forEach(({ osc, gain }) => {
                 try { osc.stop(); } catch (e) { }
@@ -551,6 +565,9 @@
                 try { gain.disconnect(); } catch (e) { }
             });
             this.activeNodes = [];
+            this.monitorNodes.forEach((node) => { try { node.disconnect(); } catch (e) { } });
+            this.monitorNodes = [];
+            this.stopTap();
             this.isSending = false;
             this.syncUi();
         },
@@ -558,6 +575,33 @@
         syncUi() {
             const btn = document.getElementById('an-morse-send-btn');
             if (btn) btn.textContent = this.isSending ? 'Стоп' : 'Отправить';
+            const tapBtn = document.getElementById('an-morse-tap-btn');
+            if (tapBtn) tapBtn.classList.toggle('danger', !!this.liveTap);
+        },
+
+        async startTap() {
+            if (!this.canSend() || this.liveTap) return;
+            const ctx = await AudioEngine.getContext();
+            if (!ctx) return;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.value = Number(settings.morseFrequency) || 880;
+            gain.gain.value = Number(settings.morseVolume) || 0.28;
+            osc.connect(gain);
+            this.attachToOutputs(gain);
+            osc.start();
+            this.liveTap = { osc, gain };
+            this.syncUi();
+        },
+
+        stopTap() {
+            if (!this.liveTap) return;
+            try { this.liveTap.osc.stop(); } catch (e) { }
+            try { this.liveTap.osc.disconnect(); } catch (e) { }
+            try { this.liveTap.gain.disconnect(); } catch (e) { }
+            this.liveTap = null;
+            this.syncUi();
         },
 
         async send(text) {
@@ -608,7 +652,7 @@
                 gain.gain.setValueAtTime(Number(settings.morseVolume) || 0.28, cursor + Math.max(0.01, duration - 0.015));
                 gain.gain.linearRampToValueAtTime(0.0001, cursor + duration);
                 osc.connect(gain);
-                gain.connect(AudioEngine.gainNode);
+                this.attachToOutputs(gain);
                 osc.start(cursor);
                 osc.stop(cursor + duration + 0.02);
                 this.activeNodes.push({ osc, gain });
@@ -630,6 +674,8 @@
             setTimeout(() => {
                 this.isSending = false;
                 this.activeNodes = [];
+                this.monitorNodes.forEach((node) => { try { node.disconnect(); } catch (e) { } });
+                this.monitorNodes = [];
                 this.syncUi();
                 Toast.show('Морзе отправлено', 'success');
             }, Math.max(300, Math.ceil((cursor - now) * 1000)));
@@ -1444,9 +1490,12 @@
                 <input id="an-morse-freq" type="range" min="400" max="1600" step="20" value="${settings.morseFrequency}">
                 <div class="an-row"><span>Громкость</span><span id="an-morse-vol-val" class="an-muted-value">${Math.round(settings.morseVolume * 100)}%</span></div>
                 <input id="an-morse-vol" type="range" min="0.05" max="0.6" step="0.01" value="${settings.morseVolume}">
+                <div class="an-row"><span>В наушники</span><span id="an-morse-monitor-val" class="an-muted-value">${Math.round(settings.morseMonitorVolume * 100)}%</span></div>
+                <input id="an-morse-monitor" type="range" min="0" max="0.6" step="0.01" value="${settings.morseMonitorVolume}">
                 <div class="an-actions-grid" style="margin-top:6px">
                     <button id="an-morse-send-btn" class="an-reset-btn" style="margin-top:0">Отправить</button>
                     <button id="an-morse-sos-btn" class="an-reset-btn" style="margin-top:0">SOS</button>
+                    <button id="an-morse-tap-btn" class="an-reset-btn" style="margin-top:0">Ключ</button>
                 </div>
             `;
             body.appendChild(morsePanel);
@@ -1469,6 +1518,11 @@
                 morsePanel.querySelector('#an-morse-vol-val').textContent = `${Math.round(settings.morseVolume * 100)}%`;
                 Settings.save();
             });
+            morsePanel.querySelector('#an-morse-monitor').addEventListener('input', (e) => {
+                settings.morseMonitorVolume = parseFloat(e.target.value);
+                morsePanel.querySelector('#an-morse-monitor-val').textContent = `${Math.round(settings.morseMonitorVolume * 100)}%`;
+                Settings.save();
+            });
             morsePanel.querySelector('#an-morse-send-btn').onclick = () => Morse.send(morsePanel.querySelector('#an-morse-text').value);
             morsePanel.querySelector('#an-morse-sos-btn').onclick = () => {
                 morsePanel.querySelector('#an-morse-text').value = 'SOS';
@@ -1476,6 +1530,21 @@
                 Settings.save();
                 Morse.send('SOS');
             };
+            const tapBtn = morsePanel.querySelector('#an-morse-tap-btn');
+            const tapStart = (e) => {
+                e.preventDefault();
+                Morse.startTap();
+            };
+            const tapStop = (e) => {
+                e.preventDefault();
+                Morse.stopTap();
+            };
+            tapBtn.addEventListener('mousedown', tapStart);
+            tapBtn.addEventListener('touchstart', tapStart, { passive: false });
+            tapBtn.addEventListener('mouseup', tapStop);
+            tapBtn.addEventListener('mouseleave', tapStop);
+            tapBtn.addEventListener('touchend', tapStop);
+            tapBtn.addEventListener('touchcancel', tapStop);
             Morse.syncUi();
 
             // IP-чекер панель
@@ -1630,6 +1699,7 @@
                 .an-textarea{width:100%;min-height:64px;resize:vertical;background:rgba(0,0,0,0.3);color:#e6edf3;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);font-size:12px;box-sizing:border-box;margin-bottom:8px}
                 .an-reset-btn{width:100%;margin-top:12px;padding:8px;background:transparent;border:1px solid rgba(255,255,255,0.08);color:#7d8590;border-radius:8px;cursor:pointer;font-size:11px;transition:all 0.2s}
                 .an-reset-btn:hover{border-color:#f85149;color:#f85149}
+                .an-reset-btn.danger{border-color:#f85149;color:#f85149;background:rgba(248,81,73,0.12)}
                 .an-inline-btn{padding:6px 8px;background:transparent;border:1px solid rgba(255,255,255,0.08);color:#c9d1d9;border-radius:8px;cursor:pointer;font-size:11px}
                 .an-panel{background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin-bottom:8px}
                 .an-meter{height:8px;background:rgba(255,255,255,0.08);border-radius:99px;overflow:hidden;margin-bottom:8px}
