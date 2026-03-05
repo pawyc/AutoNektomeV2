@@ -14,7 +14,7 @@
 (function () {
     "use strict";
 
-    const VERSION = "6.0";
+    const VERSION = "6.1";
     const STORAGE_KEY = "AutoNektomeSettings_v4";
     const MIN_CONVERSATION_SECONDS = 3;
 
@@ -98,7 +98,8 @@
         selectedTheme: "Original", particlesEnabled: true, isCollapsed: false,
         soundsEnabled: true, hotkeysEnabled: true,
         autoSkipAfter: 0, micGain: 1.0,
-        lagEnabled: false, lagIntensity: 0.5
+        lagEnabled: false, lagIntensity: 0.5,
+        enableIpChecker: false
     };
 
     let settings = { ...defaultSettings };
@@ -418,6 +419,7 @@
         isHeadphonesMuted: false,
         isInConversation: false,
         isSearching: false,
+        pendingSearchTimeout: null,
         conversationStartTime: null,
         currentSessionTime: 0,
         timerInterval: null,
@@ -512,8 +514,13 @@
     // ==========================================
     const Actions = {
         clickSearch() {
+            if (State.isSearching) return;
             const btn = Utils.getEl("searchBtn");
-            if (btn) { btn.click(); State.isSearching = true; UI.updateStatus('searching'); }
+            if (btn) {
+                State.isSearching = true;
+                UI.updateStatus('searching');
+                btn.click();
+            }
         },
         skip() {
             const stop = Utils.getEl("stopBtn");
@@ -601,7 +608,14 @@
             const check = Utils.debounce(() => {
                 if (State.isAutoMode && !State.isInConversation && !State.isSearching) {
                     const btn = Utils.getEl("searchBtn");
-                    if (btn && btn.offsetParent !== null) setTimeout(() => Actions.clickSearch(), 500);
+                    if (btn && btn.offsetParent !== null && !State.pendingSearchTimeout) {
+                        State.pendingSearchTimeout = setTimeout(() => {
+                            State.pendingSearchTimeout = null;
+                            if (State.isAutoMode && !State.isInConversation && !State.isSearching) {
+                                Actions.clickSearch();
+                            }
+                        }, 500);
+                    }
                 }
                 const timerEl = Utils.getEl("timer");
                 // Более строгая проверка: элемент видим, содержит время (00:00), не пустой
@@ -626,19 +640,26 @@
     // IP CHECKER (WebRTC ICE)
     // ==========================================
     const IPChecker = {
+        originalRTC: null,
+        isHooked: false,
+        isEnabled: false,
         lastIP: null,
         elId: 'an-ip-display',
 
         // Перехватываем RTCPeerConnection для перехвата ICE-кандидатов
         init() {
+            this.isEnabled = true;
+            if (this.isHooked) return;
             const OrigRTC = window.RTCPeerConnection;
             if (!OrigRTC) return;
+            this.originalRTC = OrigRTC;
             const self = this;
             window.RTCPeerConnection = function (...args) {
                 const pc = new OrigRTC(...args);
                 const origSetRemote = pc.setRemoteDescription.bind(pc);
                 pc.setRemoteDescription = async function (desc) {
                     const result = await origSetRemote(desc);
+                    if (!self.isEnabled) return result;
                     // Извлекаем IP из SDP
                     if (desc?.sdp) {
                         const ips = self._extractIPsFromSDP(desc.sdp);
@@ -647,6 +668,7 @@
                     return result;
                 };
                 pc.addEventListener('icecandidate', (e) => {
+                    if (!self.isEnabled) return;
                     if (e.candidate?.candidate) {
                         const ip = self._extractIPFromCandidate(e.candidate.candidate);
                         if (ip) self._onNewIP(ip, 'ICE');
@@ -656,7 +678,13 @@
             };
             // Копируем прототип чтобы instanceof работал
             window.RTCPeerConnection.prototype = OrigRTC.prototype;
+            this.isHooked = true;
             Utils.log('IPChecker: RTCPeerConnection hook active', 'info');
+        },
+
+        disable() {
+            this.isEnabled = false;
+            this.reset();
         },
 
         reset() {
@@ -691,6 +719,7 @@
         },
 
         _onNewIP(ip, source) {
+            if (!this.isEnabled) return;
             if (ip === this.lastIP) return;
             this.lastIP = ip;
             Utils.log(`Server IP (${source}): ${ip}`, 'success');
@@ -700,6 +729,7 @@
         },
 
         async _fetchGeo(ip) {
+            if (!this.isEnabled) return;
             try {
                 const ctrl = new AbortController();
                 const tid = setTimeout(() => ctrl.abort(), 5000);
@@ -708,6 +738,7 @@
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 const d = await r.json();
                 if (d.error) throw new Error(d.reason || 'geo error');
+                if (!this.isEnabled || this.lastIP !== ip) return;
                 const flag = d.country_code ? this._countryToFlag(d.country_code) : '🌐';
                 const city = d.city || '';
                 const country = d.country_name || d.country_code || '';
@@ -716,6 +747,7 @@
                 Toast.show(`${flag} ${ip}  ${geo}`, 'info', 5000);
                 this._updateDisplay(ip, flag, geo);
             } catch (e) {
+                if (!this.isEnabled || this.lastIP !== ip) return;
                 if (e.name !== 'AbortError') Utils.log('Geo lookup failed: ' + e.message, 'warn');
                 Toast.show(`🌐 ${ip}`, 'info', 3000);
             }
@@ -730,9 +762,23 @@
         _updateDisplay(ip, flag, geo) {
             const el = document.getElementById(this.elId);
             if (!el) return;
-            const flagHtml = flag ? `<span style="font-size:16px;line-height:1">${flag}</span>` : '';
-            const geoHtml = geo ? `<span class="an-ip-geo">${geo}</span>` : '';
-            el.innerHTML = `${flagHtml}<span class="an-ip-addr">${ip}</span>${geoHtml}`;
+            el.replaceChildren();
+            if (flag) {
+                const flagEl = document.createElement('span');
+                flagEl.style.cssText = 'font-size:16px;line-height:1';
+                flagEl.textContent = flag;
+                el.appendChild(flagEl);
+            }
+            const ipEl = document.createElement('span');
+            ipEl.className = 'an-ip-addr';
+            ipEl.textContent = ip;
+            el.appendChild(ipEl);
+            if (geo) {
+                const geoEl = document.createElement('span');
+                geoEl.className = 'an-ip-geo';
+                geoEl.textContent = geo;
+                el.appendChild(geoEl);
+            }
         }
     };
 
@@ -1000,6 +1046,12 @@
                 <span id="an-ip-display"><span style="color:#484f58">—</span></span>
             `;
             body.appendChild(ipBlock);
+            this.renderToggle(body, "IP-чекер", "enableIpChecker", settings.enableIpChecker, (v) => {
+                settings.enableIpChecker = v;
+                Settings.save();
+                if (v) IPChecker.init();
+                else IPChecker.disable();
+            });
 
             body.appendChild(this.createDivider('Вид'));
             this.renderToggle(body, "Анимация фона", "particlesEnabled", settings.particlesEnabled, (v) => { settings.particlesEnabled = v; Settings.save(); Particles.toggle(v); });
@@ -1196,7 +1248,8 @@
         Utils.log('Запуск...', 'info');
         Settings.load();
         Sounds.init();
-        IPChecker.init();
+        if (settings.enableIpChecker) IPChecker.init();
+        else IPChecker.disable();
         MediaHook.init();
         Hotkeys.init();
 
