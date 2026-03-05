@@ -37,6 +37,48 @@
         startVol: 0.4, endVol: 0.3
     };
 
+    const PRESETS = {
+        custom: null,
+        balanced: {
+            enableLoopback: false, gainValue: 1.0, voicePitch: false, pitchLevel: 0.5,
+            voiceEnhance: true, noiseSuppression: true, voiceControl: false,
+            soundsEnabled: true, hotkeysEnabled: true, autoSkipAfter: 0,
+            micGain: 1.0, lagEnabled: false, lagIntensity: 0.5, enableIpChecker: false
+        },
+        fast: {
+            enableLoopback: false, gainValue: 1.0, voicePitch: false, pitchLevel: 0.5,
+            voiceEnhance: true, noiseSuppression: true, voiceControl: false,
+            soundsEnabled: true, hotkeysEnabled: true, autoSkipAfter: 15,
+            micGain: 1.1, lagEnabled: false, lagIntensity: 0.5, enableIpChecker: false
+        },
+        softMic: {
+            enableLoopback: true, gainValue: 0.7, voicePitch: false, pitchLevel: 0.5,
+            voiceEnhance: true, noiseSuppression: true, voiceControl: false,
+            soundsEnabled: true, hotkeysEnabled: true, autoSkipAfter: 0,
+            micGain: 0.85, lagEnabled: false, lagIntensity: 0.5, enableIpChecker: false
+        },
+        private: {
+            enableLoopback: false, gainValue: 1.0, voicePitch: false, pitchLevel: 0.5,
+            voiceEnhance: false, noiseSuppression: true, voiceControl: false,
+            soundsEnabled: false, hotkeysEnabled: true, autoSkipAfter: 0,
+            micGain: 1.0, lagEnabled: false, lagIntensity: 0.5, enableIpChecker: false
+        }
+    };
+
+    const AUDIO_SETTING_KEYS = [
+        "enableLoopback", "gainValue", "voicePitch", "pitchLevel", "voiceEnhance",
+        "noiseSuppression", "voiceControl", "autoSkipAfter", "micGain",
+        "lagEnabled", "lagIntensity", "soundsEnabled"
+    ];
+
+    const STATUS_META = {
+        idle: { title: "Ожидание", text: "Готов" },
+        searching: { title: "Поиск...", text: "Ищу собеседника" },
+        talking: { title: "Разговор", text: "В разговоре" },
+        warning: { title: "Внимание", text: "Нужна проверка" },
+        error: { title: "Ошибка", text: "Есть проблема" }
+    };
+
     const THEMES = {
         Original: null,
         "GitHub Dark": "https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/githubdark.css"
@@ -85,6 +127,7 @@
         log(msg, type = 'info') {
             const styles = { info: 'color:#58a6ff', warn: 'color:#d29922', error: 'color:#f85149', success: 'color:#238636' };
             console.log(`%c[AutoNektome v${VERSION}] ${msg}`, styles[type] || styles.info);
+            if (typeof EventLog !== "undefined") EventLog.add(msg, type);
         }
     };
 
@@ -99,10 +142,54 @@
         soundsEnabled: true, hotkeysEnabled: true,
         autoSkipAfter: 0, micGain: 1.0,
         lagEnabled: false, lagIntensity: 0.5,
-        enableIpChecker: false
+        enableIpChecker: false,
+        compactMode: false,
+        panelPosition: null,
+        selectedPreset: "custom",
+        onboardingDone: false
     };
 
     let settings = { ...defaultSettings };
+
+    const Profiles = {
+        applyPreset(name) {
+            const preset = PRESETS[name];
+            if (!preset) return;
+            Object.assign(settings, preset);
+            settings.selectedPreset = name;
+            Settings.save();
+        },
+        resetAudio() {
+            for (const key of AUDIO_SETTING_KEYS) settings[key] = defaultSettings[key];
+            settings.selectedPreset = "custom";
+            Settings.save();
+        },
+        resetStats() {
+            settings.conversationCount = 0;
+            settings.totalTalkTime = 0;
+            settings.conversationHistory = [];
+            State.sessionCount = 0;
+            State.sessionTalkTime = 0;
+            Settings.save();
+        }
+    };
+
+    const EventLog = {
+        items: [],
+        maxItems: 30,
+        add(message, type = "info") {
+            this.items.unshift({ at: new Date().toLocaleTimeString(), message, type });
+            if (this.items.length > this.maxItems) this.items.pop();
+            if (typeof UI !== "undefined" && UI.updateEventLog) UI.updateEventLog();
+        },
+        copy() {
+            const text = this.items.map((item) => `[${item.at}] ${item.type.toUpperCase()}: ${item.message}`).join("\n");
+            navigator.clipboard?.writeText(text).then(
+                () => Toast.show('Р›РѕРі СЃРєРѕРїРёСЂРѕРІР°РЅ', 'success'),
+                () => Toast.show('РќРµ СѓРґР°Р»РѕСЃСЊ СЃРєРѕРїРёСЂРѕРІР°С‚СЊ Р»РѕРі', 'warning')
+            );
+        }
+    };
 
     const Settings = {
         load() {
@@ -473,6 +560,7 @@
 
             UI.updateStatus('talking');
             UI.updateLiveTimer();
+            EventLog.add('Найден собеседник', 'success');
             if (settings.soundsEnabled) Sounds.playStart();
             Toast.show('Собеседник найден!', 'success');
         },
@@ -503,8 +591,7 @@
             this.isInConversation = false;
             this.conversationStartTime = null;
             this.currentSessionTime = 0;
-            UI.updateStatus('idle');
-            UI.updateStats();
+            UI.refreshBasic();
             if (settings.soundsEnabled) Sounds.playEnd();
         }
     };
@@ -630,9 +717,11 @@
                     audio.dataset.anInited = "true";
                     audio.onplay = () => { if (State.isHeadphonesMuted) audio.muted = true; };
                 }
+                Diagnostics.runSelfCheck();
             }, 100);
             this.observer = new MutationObserver(check);
             this.observer.observe(document.body, { childList: true, subtree: true });
+            check();
         }
     };
 
@@ -889,11 +978,121 @@
         }
     };
 
+    const Diagnostics = {
+        issues: [],
+        setIssue(id, message) {
+            const idx = this.issues.findIndex((issue) => issue.id === id);
+            if (message) {
+                if (idx >= 0) this.issues[idx].message = message;
+                else this.issues.push({ id, message });
+            } else if (idx >= 0) {
+                this.issues.splice(idx, 1);
+            }
+            UI.updateDiagnostics?.();
+            UI.refreshStatusFromDiagnostics?.();
+        },
+        runSelfCheck() {
+            this.setIssue('searchBtn', Utils.getEl('searchBtn') ? '' : 'Не найдена кнопка поиска. Возможно, сайт изменил верстку.');
+            this.setIssue('audio', Utils.getEl('audioElement') ? '' : 'Не найден аудио-элемент. Управление звуком может не сработать.');
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            this.setIssue('speech', settings.voiceControl && !SR ? 'Браузер не поддерживает SpeechRecognition.' : '');
+        },
+        getSummary() {
+            return this.issues.length ? this.issues[0].message : 'Ошибок не обнаружено';
+        }
+    };
+
+    const MicTester = {
+        analyser: null,
+        rafId: null,
+        sourceNode: null,
+        active: false,
+        async start() {
+            try {
+                await AudioEngine.startPreview();
+                const ctx = await AudioEngine.getContext();
+                const stream = AudioEngine.rawStream || AudioEngine.previewStream;
+                if (!ctx || !stream) throw new Error('Микрофон недоступен');
+                this.stopMeter();
+                this.sourceNode = ctx.createMediaStreamSource(stream);
+                this.analyser = ctx.createAnalyser();
+                this.analyser.fftSize = 256;
+                this.sourceNode.connect(this.analyser);
+                this.active = true;
+                this.loop();
+                Toast.show('Тест микрофона запущен', 'success');
+            } catch (e) {
+                Diagnostics.setIssue('mic', 'Не удалось получить доступ к микрофону.');
+                UI.updateMicTest(0, false);
+                Toast.show('Не удалось запустить тест микрофона', 'error');
+            }
+        },
+        stop() {
+            this.active = false;
+            this.stopMeter();
+            if (!settings.enableLoopback && !State.isInConversation) AudioEngine.stopPreview();
+            UI.updateMicTest(0, false);
+        },
+        stopMeter() {
+            if (this.rafId) cancelAnimationFrame(this.rafId);
+            this.rafId = null;
+            if (this.sourceNode) try { this.sourceNode.disconnect(); } catch (e) { }
+            if (this.analyser) try { this.analyser.disconnect(); } catch (e) { }
+            this.sourceNode = null;
+            this.analyser = null;
+        },
+        loop() {
+            if (!this.active || !this.analyser) return;
+            const data = new Uint8Array(this.analyser.frequencyBinCount);
+            this.analyser.getByteFrequencyData(data);
+            const avg = data.reduce((sum, value) => sum + value, 0) / (data.length || 1);
+            UI.updateMicTest(Math.min(100, Math.round((avg / 128) * 100)), true);
+            this.rafId = requestAnimationFrame(() => this.loop());
+        }
+    };
+
+    const Onboarding = {
+        maybeShow() {
+            if (settings.onboardingDone) return;
+            this.show();
+        },
+        show() {
+            if (document.getElementById('an-onboarding')) return;
+            const overlay = document.createElement('div');
+            overlay.id = 'an-onboarding';
+            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:10002;display:flex;align-items:center;justify-content:center;padding:20px;';
+            overlay.innerHTML = `
+                <div style="width:min(420px,100%);background:#111418;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:18px;color:#e6edf3;box-shadow:0 18px 40px rgba(0,0,0,0.4)">
+                    <div style="font-size:18px;font-weight:700;margin-bottom:8px">Быстрая настройка</div>
+                    <div style="font-size:13px;color:#9da7b3;line-height:1.5;margin-bottom:14px">Выберите стартовый профиль. Его можно потом изменить в панели.</div>
+                    <div style="display:grid;gap:8px">
+                        <button data-preset="balanced" class="an-reset-btn" style="margin-top:0">Обычный старт</button>
+                        <button data-preset="softMic" class="an-reset-btn" style="margin-top:0">Мягкий микрофон</button>
+                        <button data-preset="fast" class="an-reset-btn" style="margin-top:0">Быстрый авто-скип</button>
+                        <button data-preset="private" class="an-reset-btn" style="margin-top:0">Приватный режим</button>
+                        <button data-preset="skip" class="an-reset-btn" style="margin-top:0">Оставить как есть</button>
+                    </div>
+                </div>
+            `;
+            overlay.addEventListener('click', (e) => {
+                const btn = e.target.closest('button[data-preset]');
+                if (!btn) return;
+                const preset = btn.dataset.preset;
+                if (preset !== 'skip') Profiles.applyPreset(preset);
+                settings.onboardingDone = true;
+                Settings.save();
+                UI.refreshBasic?.();
+                overlay.remove();
+            });
+            document.body.appendChild(overlay);
+        }
+    };
+
     // ==========================================
     // UI
     // ==========================================
     const UI = {
-        root: null, btnMic: null, btnHead: null, statusEl: null, statsEl: null, liveTimerEl: null,
+        root: null, btnMic: null, btnHead: null, statusEl: null, statusTextEl: null, statsEl: null, liveTimerEl: null, diagnosticsEl: null, eventLogEl: null, micMeterEl: null, micMeterTextEl: null, presetSelect: null,
 
         create() {
             if (document.getElementById("an-root")) return;
@@ -902,6 +1101,7 @@
             this.root = document.createElement("div");
             this.root.id = "an-root";
             if (settings.isCollapsed) this.root.classList.add("an-minimized");
+            if (settings.compactMode) this.root.classList.add("an-compact");
 
             // Header
             const head = document.createElement("div");
@@ -913,6 +1113,7 @@
                 </div>
                 <div class="an-head-right">
                     <span class="an-status" id="an-status"></span>
+                    <span class="an-status-text" id="an-status-text">Готов</span>
                     <span class="an-arrow">${ICONS.chevron}</span>
                 </div>
             `;
@@ -941,11 +1142,20 @@
                         this.root.style.right = 'auto';
                     }
                 };
-                const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+                const onUp = () => {
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                    if (this._wasDragged) {
+                        const rect = this.root.getBoundingClientRect();
+                        settings.panelPosition = { left: Math.round(rect.left), top: Math.round(rect.top) };
+                        Settings.save();
+                    }
+                };
                 document.addEventListener('mousemove', onMove);
                 document.addEventListener('mouseup', onUp);
             });
             this.statusEl = head.querySelector('#an-status');
+            this.statusTextEl = head.querySelector('#an-status-text');
 
             const body = document.createElement("div");
             body.className = "an-body";
@@ -966,6 +1176,34 @@
             controls.append(this.btnMic, this.btnHead, btnSkip, btnSearch);
             body.appendChild(controls);
 
+            const presetRow = document.createElement("div");
+            presetRow.className = "an-row";
+            presetRow.title = "Готовые пресеты настроек";
+            presetRow.innerHTML = '<span>Профиль</span>';
+            this.presetSelect = document.createElement("select");
+            this.presetSelect.className = "an-select";
+            [["custom", "Свои"], ["balanced", "Обычный"], ["softMic", "Мягкий микрофон"], ["fast", "Быстрый"], ["private", "Приватный"]]
+                .forEach(([value, label]) => {
+                    const o = document.createElement("option");
+                    o.value = value;
+                    o.textContent = label;
+                    if ((settings.selectedPreset || "custom") === value) o.selected = true;
+                    this.presetSelect.appendChild(o);
+                });
+            this.presetSelect.onchange = (e) => {
+                if (e.target.value !== "custom") {
+                    Profiles.applyPreset(e.target.value);
+                    this.refreshBasic();
+                    Toast.show(`Профиль: ${e.target.selectedOptions[0].textContent}`, 'success');
+                }
+            };
+            presetRow.appendChild(this.presetSelect);
+            body.appendChild(presetRow);
+            const hotkeyHint = document.createElement("div");
+            hotkeyHint.className = "an-help";
+            hotkeyHint.textContent = "M микрофон, H звук, S скип, A авто-режим, Space поиск";
+            body.appendChild(hotkeyHint);
+
             body.appendChild(this.createDivider('Основное'));
             this.renderToggle(body, "Авторежим", "autoMode", State.isAutoMode, (v) => State.setAutoMode(v));
             this.renderToggle(body, "Звуки", "soundsEnabled", settings.soundsEnabled, (v) => { settings.soundsEnabled = v; Settings.save(); });
@@ -981,6 +1219,20 @@
                 settings.autoSkipAfter = v; Settings.save();
                 document.getElementById('an-autoskip-val').textContent = fmtSkip(v);
             }));
+            const micTestBlock = document.createElement("div");
+            micTestBlock.className = "an-panel";
+            micTestBlock.innerHTML = `
+                <div class="an-row" style="margin-bottom:6px">
+                    <span>Проверка микрофона</span>
+                    <button id="an-mic-test-btn" class="an-inline-btn">Старт</button>
+                </div>
+                <div class="an-meter"><div id="an-mic-meter-fill" class="an-meter-fill"></div></div>
+                <div id="an-mic-meter-text" class="an-help">Сигнал не проверяется</div>
+            `;
+            body.appendChild(micTestBlock);
+            this.micMeterEl = micTestBlock.querySelector('#an-mic-meter-fill');
+            this.micMeterTextEl = micTestBlock.querySelector('#an-mic-meter-text');
+            micTestBlock.querySelector('#an-mic-test-btn').onclick = () => { if (MicTester.active) MicTester.stop(); else MicTester.start(); };
 
             body.appendChild(this.createDivider('Аудио'));
             this.renderToggle(body, "Самопрослушивание", "enableLoopback", settings.enableLoopback, (v) => {
@@ -1066,6 +1318,43 @@
             themeRow.appendChild(themeSel);
             body.appendChild(themeRow);
 
+            body.appendChild(this.createDivider('Стабильность'));
+            this.diagnosticsEl = document.createElement("div");
+            this.diagnosticsEl.className = "an-panel";
+            body.appendChild(this.diagnosticsEl);
+
+            body.appendChild(this.createDivider('История'));
+            this.eventLogEl = document.createElement("div");
+            this.eventLogEl.className = "an-panel";
+            body.appendChild(this.eventLogEl);
+
+            const actionsGrid = document.createElement("div");
+            actionsGrid.className = "an-actions-grid";
+            const resetAudioBtn = document.createElement("button");
+            resetAudioBtn.className = "an-reset-btn";
+            resetAudioBtn.textContent = "Сбросить аудио";
+            resetAudioBtn.onclick = () => { Profiles.resetAudio(); this.refreshBasic(); Toast.show('Аудио-настройки сброшены', 'info'); };
+            const resetStatsBtn = document.createElement("button");
+            resetStatsBtn.className = "an-reset-btn";
+            resetStatsBtn.textContent = "Сбросить статистику";
+            resetStatsBtn.onclick = () => { Profiles.resetStats(); this.refreshBasic(); Toast.show('Статистика сброшена', 'info'); };
+            const copyLogBtn = document.createElement("button");
+            copyLogBtn.className = "an-reset-btn";
+            copyLogBtn.textContent = "Копировать лог";
+            copyLogBtn.onclick = () => EventLog.copy();
+            const compactBtn = document.createElement("button");
+            compactBtn.className = "an-reset-btn";
+            compactBtn.id = "an-compact-btn";
+            compactBtn.textContent = settings.compactMode ? "Полный режим" : "Компактный режим";
+            compactBtn.onclick = () => {
+                settings.compactMode = !settings.compactMode;
+                Settings.save();
+                this.root.classList.toggle("an-compact", settings.compactMode);
+                compactBtn.textContent = settings.compactMode ? "Полный режим" : "Компактный режим";
+            };
+            actionsGrid.append(resetAudioBtn, resetStatsBtn, copyLogBtn, compactBtn);
+            body.appendChild(actionsGrid);
+
             const resetBtn = document.createElement("button");
             resetBtn.className = "an-reset-btn";
             resetBtn.textContent = "Сбросить";
@@ -1074,8 +1363,13 @@
 
             this.root.append(head, body);
             document.body.appendChild(this.root);
+            if (settings.panelPosition && window.innerWidth > 600) {
+                this.root.style.left = `${settings.panelPosition.left}px`;
+                this.root.style.top = `${settings.panelPosition.top}px`;
+                this.root.style.right = 'auto';
+            }
             this.updateButtons();
-            this.updateStatus('idle');
+            this.refreshBasic();
         },
 
         injectStyles() {
@@ -1096,10 +1390,14 @@
                 .an-status.idle{background:#484f58}
                 .an-status.searching{background:#d29922;animation:anPulse 1.2s infinite}
                 .an-status.talking{background:#3fb950;box-shadow:0 0 8px rgba(63,185,80,0.5)}
+                .an-status.warning{background:#d29922}
+                .an-status.error{background:#f85149}
+                .an-status-text{font-size:11px;color:#7d8590;max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
                 .an-arrow{transition:transform 0.3s;color:#7d8590;display:flex}
                 .an-minimized .an-arrow{transform:rotate(-90deg)}
                 .an-minimized .an-body{display:none}
                 .an-body{padding:14px;overflow-y:auto;max-height:70vh}
+                .an-compact .an-sub,.an-compact .an-ip-block,.an-compact .an-panel,.an-compact .an-actions-grid,.an-compact .an-divider:nth-of-type(n+3),.an-compact .an-row:nth-of-type(n+9),.an-compact input[type=range]:nth-of-type(n+2){display:none}
 
                 .an-stats{background:rgba(56,139,253,0.08);border:1px solid rgba(56,139,253,0.15);border-radius:10px;padding:12px;margin-bottom:12px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center}
                 .an-stat-item{display:flex;flex-direction:column;gap:2px}
@@ -1124,6 +1422,7 @@
                 .an-divider::before,.an-divider::after{content:'';flex:1;height:1px;background:rgba(255,255,255,0.06)}
 
                 .an-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+                .an-help{font-size:10px;color:#7d8590;line-height:1.4;margin:-2px 0 8px}
                 .an-switch{position:relative;width:36px;height:20px;flex-shrink:0}
                 .an-switch input{opacity:0;width:0;height:0}
                 .an-slider{position:absolute;cursor:pointer;inset:0;background:rgba(255,255,255,0.1);transition:0.2s;border-radius:20px}
@@ -1141,6 +1440,13 @@
                 .an-select{background:rgba(0,0,0,0.3);color:#e6edf3;padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.08);font-size:12px;cursor:pointer;min-width:100px}
                 .an-reset-btn{width:100%;margin-top:12px;padding:8px;background:transparent;border:1px solid rgba(255,255,255,0.08);color:#7d8590;border-radius:8px;cursor:pointer;font-size:11px;transition:all 0.2s}
                 .an-reset-btn:hover{border-color:#f85149;color:#f85149}
+                .an-inline-btn{padding:6px 8px;background:transparent;border:1px solid rgba(255,255,255,0.08);color:#c9d1d9;border-radius:8px;cursor:pointer;font-size:11px}
+                .an-panel{background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin-bottom:8px}
+                .an-meter{height:8px;background:rgba(255,255,255,0.08);border-radius:99px;overflow:hidden;margin-bottom:8px}
+                .an-meter-fill{height:100%;width:0;background:linear-gradient(90deg,#238636,#58a6ff,#f85149);transition:width .08s linear}
+                .an-log-item{font-size:11px;line-height:1.4;color:#c9d1d9;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
+                .an-log-item:last-child{border-bottom:none}
+                .an-actions-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
             `;
             const style = document.createElement("style");
             style.id = "an-styles";
@@ -1205,11 +1511,17 @@
 
         updateToggle(key, val) { const el = document.getElementById(`an-tog-${key}`); if (el) el.checked = val; },
 
-        updateStatus(status) {
+        updateStatus(status, text = "") {
+            if (this.statusTextEl) this.statusTextEl.textContent = text || (STATUS_META[status] || STATUS_META.idle).text;
             if (this.statusEl) {
                 this.statusEl.className = `an-status ${status}`;
                 this.statusEl.title = { idle: 'Ожидание', searching: 'Поиск...', talking: 'Разговор' }[status] || '';
             }
+        },
+
+        refreshStatusFromDiagnostics() {
+            if (Diagnostics.issues.length && !State.isInConversation && !State.isSearching) this.updateStatus('warning', Diagnostics.getSummary());
+            else this.updateStatus(State.isInConversation ? 'talking' : State.isSearching ? 'searching' : 'idle');
         },
 
         updateStats() {
@@ -1238,6 +1550,37 @@
                 this.liveTimerEl.textContent = Utils.formatTime(State.currentSessionTime);
                 this.liveTimerEl.className = 'an-stat-value an-stat-live';
             }
+        },
+
+        updateDiagnostics() {
+            if (!this.diagnosticsEl) return;
+            this.diagnosticsEl.innerHTML = Diagnostics.issues.length
+                ? Diagnostics.issues.map((issue) => `<div class="an-help">${issue.message}</div>`).join("")
+                : '<div class="an-help" style="margin:0">Self-check: проблем не найдено</div>';
+        },
+
+        updateEventLog() {
+            if (!this.eventLogEl) return;
+            this.eventLogEl.innerHTML = EventLog.items.length
+                ? EventLog.items.slice(0, 8).map((item) => `<div class="an-log-item"><span style="color:#7d8590">${item.at}</span> ${item.message}</div>`).join("")
+                : '<div class="an-help" style="margin:0">Пока нет событий</div>';
+        },
+
+        updateMicTest(value, active) {
+            if (this.micMeterEl) this.micMeterEl.style.width = `${value}%`;
+            if (this.micMeterTextEl) this.micMeterTextEl.textContent = active ? `Уровень сигнала: ${value}%` : 'Сигнал не проверяется';
+            const btn = document.getElementById('an-mic-test-btn');
+            if (btn) btn.textContent = active ? 'Стоп' : 'Старт';
+        },
+
+        refreshBasic() {
+            this.updateButtons();
+            this.updateStats();
+            this.updateDiagnostics();
+            this.updateEventLog();
+            if (this.presetSelect) this.presetSelect.value = settings.selectedPreset || 'custom';
+            if (Diagnostics.issues.length && !State.isInConversation && !State.isSearching) this.updateStatus('warning', Diagnostics.getSummary());
+            else this.updateStatus(State.isInConversation ? 'talking' : State.isSearching ? 'searching' : 'idle');
         }
     };
 
@@ -1260,8 +1603,11 @@
         Themes.apply(settings.selectedTheme);
         Particles.init();
         Observer.init();
+        Diagnostics.runSelfCheck();
+        UI.refreshBasic();
 
         if (settings.voiceControl) VoiceControl.toggle(true);
+        Onboarding.maybeShow();
 
         Utils.log('Готов!', 'success');
         Toast.show(`AutoNektome v${VERSION}`, 'success');
