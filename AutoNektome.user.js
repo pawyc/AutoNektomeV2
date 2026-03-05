@@ -7,8 +7,8 @@
 // @match        https://nekto.me/audiochat
 // @grant        none
 // @license      MIT
-// @downloadURL  https://update.greasyfork.org/scripts/498724/AutoNektome.user.js
-// @updateURL    https://update.greasyfork.org/scripts/498724/AutoNektome.meta.js
+// @downloadURL  https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/AutoNektome.user.js
+// @updateURL    https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/AutoNektome.meta.js
 // ==/UserScript==
 
 (function () {

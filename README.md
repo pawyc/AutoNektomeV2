@@ -19,8 +19,10 @@
 ## 🛠 Установка
 
 1. Установите расширение **Tampermonkey** для вашего браузера (Chrome, Firefox, Edge, Яндекс.Браузер).
-2. Установите скрипт: [Установить AutoNektome](https://update.greasyfork.org/scripts/498724/AutoNektome.user.js).
+2. Установите скрипт: [Установить AutoNektome](https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/AutoNektome.user.js).
 3. Откройте [nekto.me/audiochat](https://nekto.me/audiochat). Меню управления появится автоматически в правом верхнем углу.
+
+> **Автообновление:** если скрипт установлен по GitHub-ссылке выше, Tampermonkey будет получать обновления автоматически после публикации новой версии в `main`.
 
 > **Важно:** Для работы всех аудио-функций (изменение голоса, автогромкость) необходимо разрешить доступ к микрофону на сайте.
 

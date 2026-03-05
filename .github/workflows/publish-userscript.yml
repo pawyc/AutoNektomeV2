@@ -1,0 +1,42 @@
+name: Publish Userscript
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Bump userscript version
+        run: node .github/scripts/bump-userscript-version.mjs
+
+      - name: Generate metadata file
+        run: node .github/scripts/generate-meta.mjs
+
+      - name: Commit published userscript
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add AutoNektome.user.js AutoNektome.meta.js README.md
+          if git diff --cached --quiet; then
+            echo "No publishable changes."
+            exit 0
+          fi
+          VERSION=$(node -e "const fs=require('fs'); const m=fs.readFileSync('AutoNektome.user.js','utf8').match(/^\\/\\/ @version\\s+(.+)$/m); if(!m) throw new Error('No version'); process.stdout.write(m[1].trim());")
+          git commit -m "chore: publish userscript v${VERSION} [skip ci]"
+          git push
