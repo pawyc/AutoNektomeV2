@@ -594,6 +594,29 @@
     },
   };
 
+  const DrisnyaMode = {
+    styleId: "an-drisnya-style",
+    activeClass: "an-drisnya-active",
+    ensureStyle() {
+      if (document.getElementById(this.styleId)) return;
+      const style = document.createElement("style");
+      style.id = this.styleId;
+      style.textContent = `
+        body.${this.activeClass}::before{content:"";position:fixed;inset:0;z-index:-3;pointer-events:none;background-image:url("${DRISNYA_ASSETS.backgroundImage}");background-size:cover;background-position:center;background-repeat:no-repeat;opacity:0.3;filter:sepia(0.5) saturate(0.8) brightness(0.65)}
+        body.${this.activeClass}::after{content:"";position:fixed;inset:0;z-index:-2;pointer-events:none;background:radial-gradient(circle at top, rgba(120,74,32,0.18), transparent 55%),linear-gradient(180deg, rgba(48,29,16,0.52), rgba(24,14,8,0.78));mix-blend-mode:screen}
+        body.${this.activeClass}{background-color:#1a120d!important;background-image:linear-gradient(180deg, rgba(46,29,18,0.72), rgba(22,13,8,0.92))!important;background-attachment:fixed!important}
+        body.${this.activeClass} #an-root{border-color:rgba(163,94,52,0.35);box-shadow:0 8px 32px rgba(39,20,8,0.5);background:rgba(28,17,11,0.94)}
+        body.${this.activeClass} .an-title{color:#ff9a57}
+        body.${this.activeClass} .an-stats{background:rgba(121,75,36,0.14);border-color:rgba(166,99,53,0.26)}
+      `;
+      document.head.appendChild(style);
+    },
+    apply() {
+      this.ensureStyle();
+      document.body.classList.toggle(this.activeClass, Boolean(settings.drisnyaMode));
+    },
+  };
+
   // ==========================================
   // АУДИО ДВИЖОК (ИСПРАВЛЕННЫЙ v2)
   // ==========================================
