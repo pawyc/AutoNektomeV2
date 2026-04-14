@@ -467,6 +467,7 @@
     morseMonitorVolume: 0.18,
     morseLastMessage: "SOS",
     compactMode: false,
+    drisnyaMode: false,
     panelPosition: null,
     selectedPreset: "custom",
     onboardingDone: false,
@@ -540,6 +541,7 @@
           typeof settings.stopWord === "string"
             ? settings.stopWord
             : defaultSettings.stopWord;
+        settings.drisnyaMode = Boolean(settings.drisnyaMode);
         return true;
       } catch (e) {
         Utils.log("Ошибка загрузки настроек", "error");
@@ -556,6 +558,7 @@
     reset() {
       settings = { ...defaultSettings };
       this.save();
+      Sounds.syncEnabledState();
       Toast.show("Настройки сброшены", "info");
     },
   };
