@@ -1140,6 +1140,7 @@
     setAutoMode(enabled) {
       this.isAutoMode = enabled;
       UI.updateToggle("autoMode", enabled);
+      if (!enabled) Sounds.syncDrisnyaLoop();
       Toast.show(
         enabled ? "Авторежим вкл" : "Авторежим выкл",
         enabled ? "success" : "info",
@@ -1174,6 +1175,7 @@
       if (this.isInConversation) return;
       this.isInConversation = true;
       this.isSearching = false;
+      Sounds.stopLoop();
       this.conversationStartTime = Date.now();
       this.currentSessionTime = 0;
 
@@ -1233,6 +1235,7 @@
       this.currentSessionTime = 0;
       UI.refreshBasic();
       Sounds.playEnd();
+      Sounds.syncDrisnyaLoop();
     },
   };
 
@@ -1246,12 +1249,14 @@
       if (btn) {
         State.isSearching = true;
         UI.updateStatus("searching");
+        Sounds.syncDrisnyaLoop();
         btn.click();
       }
     },
     skip(source = "manual") {
       const stop = Utils.getEl("stopBtn");
       if (!stop) return;
+      Sounds.stopLoop();
       State.skippedUsersCount += 1;
       if (source === "manual") Sounds.playRandomManualSkip();
       if (State.skippedUsersCount % 5 === 0) Sounds.play("skipMilestone");
