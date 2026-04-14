@@ -149,27 +149,6 @@
       lagIntensity: 0.5,
       enableIpChecker: false,
     },
-    morse: {
-      enableLoopback: false,
-      gainValue: 1.0,
-      voicePitch: false,
-      pitchLevel: 0.5,
-      voiceEnhance: false,
-      noiseSuppression: true,
-      voiceControl: false,
-      soundsEnabled: true,
-      hotkeysEnabled: true,
-      autoSkipAfter: 0,
-      micGain: 1.0,
-      lagEnabled: false,
-      lagIntensity: 0.5,
-      enableIpChecker: false,
-      morseEnabled: true,
-      morseUnit: 0.08,
-      morseFrequency: 880,
-      morseVolume: 0.28,
-      morseMonitorVolume: 0.18,
-    },
   };
 
   const AUDIO_SETTING_KEYS = [
@@ -185,11 +164,6 @@
     "lagEnabled",
     "lagIntensity",
     "soundsEnabled",
-    "morseEnabled",
-    "morseUnit",
-    "morseFrequency",
-    "morseVolume",
-    "morseMonitorVolume",
   ];
 
   const STATUS_META = {
@@ -198,83 +172,6 @@
     talking: { title: "Разговор", text: "В разговоре" },
     warning: { title: "Внимание", text: "Нужна проверка" },
     error: { title: "Ошибка", text: "Есть проблема" },
-  };
-
-  const MORSE_MAP = {
-    A: ".-",
-    B: "-...",
-    C: "-.-.",
-    D: "-..",
-    E: ".",
-    F: "..-.",
-    G: "--.",
-    H: "....",
-    I: "..",
-    J: ".---",
-    K: "-.-",
-    L: ".-..",
-    M: "--",
-    N: "-.",
-    O: "---",
-    P: ".--.",
-    Q: "--.-",
-    R: ".-.",
-    S: "...",
-    T: "-",
-    U: "..-",
-    V: "...-",
-    W: ".--",
-    X: "-..-",
-    Y: "-.--",
-    Z: "--..",
-    0: "-----",
-    1: ".----",
-    2: "..---",
-    3: "...--",
-    4: "....-",
-    5: ".....",
-    6: "-....",
-    7: "--...",
-    8: "---..",
-    9: "----.",
-    А: ".-",
-    Б: "-...",
-    В: ".--",
-    Г: "--.",
-    Д: "-..",
-    Е: ".",
-    Ж: "...-",
-    З: "--..",
-    И: "..",
-    Й: ".---",
-    К: "-.-",
-    Л: ".-..",
-    М: "--",
-    Н: "-.",
-    О: "---",
-    П: ".--.",
-    Р: ".-.",
-    С: "...",
-    Т: "-",
-    У: "..-",
-    Ф: "..-.",
-    Х: "....",
-    Ц: "-.-.",
-    Ч: "---.",
-    Ш: "----",
-    Щ: "--.-",
-    Ы: "-.--",
-    Ь: "-..-",
-    Э: "..-..",
-    Ю: "..--",
-    Я: ".-.-",
-    ".": ".-.-.-",
-    ",": "--..--",
-    "?": "..--..",
-    "!": "-.-.--",
-    "/": "-..-.",
-    "-": "-....-",
-    " ": " ",
   };
 
   const THEMES = {
@@ -415,15 +312,6 @@
         };
       }
 
-      if (this.getBrowserName() === "Firefox") {
-        return {
-          supported: false,
-          ctor: null,
-          message:
-            "Firefox в текущей конфигурации не предоставляет SpeechRecognition. Скрипт автоматически включит голосовой режим, если API доступен в вашей сборке браузера.",
-        };
-      }
-
       return {
         supported: false,
         ctor: null,
@@ -457,13 +345,6 @@
     lagEnabled: false,
     lagIntensity: 0.5,
     enableIpChecker: false,
-    morseEnabled: false,
-    morseUnit: 0.08,
-    morseFrequency: 880,
-    morseVolume: 0.28,
-    morseMonitorVolume: 0.18,
-    morseLastMessage: "SOS",
-    compactMode: false,
     drisnyaMode: false,
     panelPosition: null,
     selectedPreset: "custom",
@@ -741,8 +622,6 @@
         loopGain: null,
         lag: null,
       };
-
-      Morse.stop();
       this.rawStream = null;
       this.activeStream = null;
 
@@ -923,198 +802,6 @@
       if (this.nodes.loopGain)
         this.nodes.loopGain.gain.value = settings.gainValue;
       if (this.gainNode) this.gainNode.gain.value = settings.micGain;
-      Morse.syncUi?.();
-    },
-  };
-
-  const Morse = {
-    activeNodes: [],
-    isSending: false,
-    monitorNodes: [],
-    liveTap: null,
-
-    encode(text) {
-      return (text || "")
-        .toUpperCase()
-        .split("")
-        .map((ch) => MORSE_MAP[ch] ?? "")
-        .filter((code, index, arr) => code || arr[index] === " ")
-        .join(" ");
-    },
-
-    canSend() {
-      return (
-        settings.morseEnabled && AudioEngine.gainNode && State.isInConversation
-      );
-    },
-
-    attachToOutputs(gainNode) {
-      gainNode.connect(AudioEngine.gainNode);
-      if (
-        (Number(settings.morseMonitorVolume) || 0) > 0 &&
-        AudioEngine.ctx?.destination
-      ) {
-        const monitor = AudioEngine.ctx.createGain();
-        monitor.gain.value = Number(settings.morseMonitorVolume) || 0.18;
-        gainNode.connect(monitor);
-        monitor.connect(AudioEngine.ctx.destination);
-        this.monitorNodes.push(monitor);
-      }
-    },
-
-    stop() {
-      this.activeNodes.forEach(({ osc, gain }) => {
-        try {
-          osc.stop();
-        } catch (e) {}
-        try {
-          osc.disconnect();
-        } catch (e) {}
-        try {
-          gain.disconnect();
-        } catch (e) {}
-      });
-      this.activeNodes = [];
-      this.monitorNodes.forEach((node) => {
-        try {
-          node.disconnect();
-        } catch (e) {}
-      });
-      this.monitorNodes = [];
-      this.stopTap();
-      this.isSending = false;
-      this.syncUi();
-    },
-
-    syncUi() {
-      const btn = document.getElementById("an-morse-send-btn");
-      if (btn) btn.textContent = this.isSending ? "Стоп" : "Отправить";
-      const tapBtn = document.getElementById("an-morse-tap-btn");
-      if (tapBtn) tapBtn.classList.toggle("danger", !!this.liveTap);
-    },
-
-    async startTap() {
-      if (!this.canSend() || this.liveTap) return;
-      const ctx = await AudioEngine.getContext();
-      if (!ctx) return;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.value = Number(settings.morseFrequency) || 880;
-      gain.gain.value = Number(settings.morseVolume) || 0.28;
-      osc.connect(gain);
-      this.attachToOutputs(gain);
-      osc.start();
-      this.liveTap = { osc, gain };
-      this.syncUi();
-    },
-
-    stopTap() {
-      if (!this.liveTap) return;
-      try {
-        this.liveTap.osc.stop();
-      } catch (e) {}
-      try {
-        this.liveTap.osc.disconnect();
-      } catch (e) {}
-      try {
-        this.liveTap.gain.disconnect();
-      } catch (e) {}
-      this.liveTap = null;
-      this.syncUi();
-    },
-
-    async send(text) {
-      const normalized = (text || "").trim();
-      if (!normalized) {
-        Toast.show("Введите текст для морзе", "warning");
-        return;
-      }
-
-      if (this.isSending) {
-        this.stop();
-        return;
-      }
-
-      if (!this.canSend()) {
-        Toast.show(
-          "Морзе доступно только в разговоре и при включенном режиме",
-          "warning",
-        );
-        return;
-      }
-
-      const ctx = await AudioEngine.getContext();
-      if (!ctx || !AudioEngine.gainNode) {
-        Toast.show("Аудио-цепочка недоступна", "warning");
-        return;
-      }
-
-      const encoded = this.encode(normalized);
-      if (!encoded) {
-        Toast.show("Не удалось закодировать сообщение", "warning");
-        return;
-      }
-
-      settings.morseLastMessage = normalized;
-      Settings.save();
-
-      const now = ctx.currentTime + 0.05;
-      const unit = Math.max(0.03, Number(settings.morseUnit) || 0.08);
-      let cursor = now;
-      this.isSending = true;
-      this.syncUi();
-
-      const scheduleTone = (duration) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = "sine";
-        osc.frequency.value = Number(settings.morseFrequency) || 880;
-        gain.gain.setValueAtTime(0.0001, cursor);
-        gain.gain.linearRampToValueAtTime(
-          Number(settings.morseVolume) || 0.28,
-          cursor + 0.01,
-        );
-        gain.gain.setValueAtTime(
-          Number(settings.morseVolume) || 0.28,
-          cursor + Math.max(0.01, duration - 0.015),
-        );
-        gain.gain.linearRampToValueAtTime(0.0001, cursor + duration);
-        osc.connect(gain);
-        this.attachToOutputs(gain);
-        osc.start(cursor);
-        osc.stop(cursor + duration + 0.02);
-        this.activeNodes.push({ osc, gain });
-        cursor += duration;
-      };
-
-      for (const char of encoded) {
-        if (char === ".") {
-          scheduleTone(unit);
-          cursor += unit;
-        } else if (char === "-") {
-          scheduleTone(unit * 3);
-          cursor += unit;
-        } else if (char === " ") {
-          cursor += unit * 3;
-        }
-      }
-
-      setTimeout(
-        () => {
-          this.isSending = false;
-          this.activeNodes = [];
-          this.monitorNodes.forEach((node) => {
-            try {
-              node.disconnect();
-            } catch (e) {}
-          });
-          this.monitorNodes = [];
-          this.syncUi();
-          Toast.show("Морзе отправлено", "success");
-        },
-        Math.max(300, Math.ceil((cursor - now) * 1000)),
-      );
     },
   };
 
@@ -1968,17 +1655,26 @@
       const w = this.canvas.width,
         h = this.canvas.height;
       this.ctx.clearRect(0, 0, w, h);
-      this.ctx.fillStyle = "rgba(88,166,255,0.4)";
+      if (settings.drisnyaMode) {
+        this.ctx.font = "24px Arial";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+      } else {
+        this.ctx.fillStyle = "rgba(88,166,255,0.4)";
+      }
       for (let i = 0; i < this.parts.length; i++) {
         const p = this.parts[i];
         p.x += p.vx;
         p.y += p.vy;
         if (p.x < 0 || p.x > w) p.vx *= -1;
         if (p.y < 0 || p.y > h) p.vy *= -1;
-        this.ctx.beginPath();
-        this.ctx.arc(p.x, p.y, 1.5, 0, Math.PI * 2);
-        this.ctx.fill();
-        for (let j = i + 1; j < this.parts.length; j++) {
+        if (settings.drisnyaMode) {
+          this.ctx.fillText("\uD83D\uDCA9", p.x, p.y);
+        } else {
+          this.ctx.beginPath();
+          this.ctx.arc(p.x, p.y, 1.5, 0, Math.PI * 2);
+          this.ctx.fill();
+          for (let j = i + 1; j < this.parts.length; j++) {
           const p2 = this.parts[j],
             dx = p.x - p2.x,
             dy = p.y - p2.y,
@@ -1989,6 +1685,7 @@
             this.ctx.moveTo(p.x, p.y);
             this.ctx.lineTo(p2.x, p2.y);
             this.ctx.stroke();
+            }
           }
         }
       }
@@ -2196,7 +1893,6 @@
       this.root = document.createElement("div");
       this.root.id = "an-root";
       if (settings.isCollapsed) this.root.classList.add("an-minimized");
-      if (settings.compactMode) this.root.classList.add("an-compact");
 
       // Header
       const head = document.createElement("div");
@@ -2306,7 +2002,6 @@
         ["softMic", "Мягкий микрофон"],
         ["fast", "Быстрый"],
         ["private", "Приватный"],
-        ["morse", "Морзе"],
       ].forEach(([value, label]) => {
         const o = document.createElement("option");
         o.value = value;
@@ -2552,103 +2247,6 @@
         }),
       );
       body.appendChild(lagSub);
-      const morseHeader = document.createElement("div");
-      morseHeader.className = "an-row";
-      morseHeader.title = "Отправляет текст как короткие и длинные писки";
-      morseHeader.innerHTML = `<span>Морзе</span>`;
-      body.appendChild(morseHeader);
-      this.renderToggle(
-        body,
-        "Морзе-режим",
-        "morseEnabled",
-        settings.morseEnabled,
-        (v) => {
-          settings.morseEnabled = v;
-          Settings.save();
-        },
-      );
-      const morsePanel = document.createElement("div");
-      morsePanel.className = "an-panel";
-      morsePanel.innerHTML = `
-                <div class="an-help">Работает только во время разговора. Писки идут в исходящий микрофон.</div>
-                <textarea id="an-morse-text" class="an-textarea" placeholder="Например: SOS или ПРИВЕТ">${settings.morseLastMessage || "SOS"}</textarea>
-                <div class="an-row"><span>Скорость</span><span id="an-morse-unit-val" class="an-muted-value">${Math.round(settings.morseUnit * 1000)}мс</span></div>
-                <input id="an-morse-unit" type="range" min="0.04" max="0.2" step="0.01" value="${settings.morseUnit}">
-                <div class="an-row"><span>Тон</span><span id="an-morse-freq-val" class="an-muted-value">${Math.round(settings.morseFrequency)}Hz</span></div>
-                <input id="an-morse-freq" type="range" min="400" max="1600" step="20" value="${settings.morseFrequency}">
-                <div class="an-row"><span>Громкость</span><span id="an-morse-vol-val" class="an-muted-value">${Math.round(settings.morseVolume * 100)}%</span></div>
-                <input id="an-morse-vol" type="range" min="0.05" max="0.6" step="0.01" value="${settings.morseVolume}">
-                <div class="an-row"><span>В наушники</span><span id="an-morse-monitor-val" class="an-muted-value">${Math.round(settings.morseMonitorVolume * 100)}%</span></div>
-                <input id="an-morse-monitor" type="range" min="0" max="0.6" step="0.01" value="${settings.morseMonitorVolume}">
-                <div class="an-actions-grid" style="margin-top:6px">
-                    <button id="an-morse-send-btn" class="an-reset-btn" style="margin-top:0">Отправить</button>
-                    <button id="an-morse-sos-btn" class="an-reset-btn" style="margin-top:0">SOS</button>
-                    <button id="an-morse-tap-btn" class="an-reset-btn" style="margin-top:0">Ключ</button>
-                </div>
-            `;
-      body.appendChild(morsePanel);
-      morsePanel
-        .querySelector("#an-morse-text")
-        .addEventListener("input", (e) => {
-          settings.morseLastMessage = e.target.value;
-          Settings.save();
-        });
-      morsePanel
-        .querySelector("#an-morse-unit")
-        .addEventListener("input", (e) => {
-          settings.morseUnit = parseFloat(e.target.value);
-          morsePanel.querySelector("#an-morse-unit-val").textContent =
-            `${Math.round(settings.morseUnit * 1000)}мс`;
-          Settings.save();
-        });
-      morsePanel
-        .querySelector("#an-morse-freq")
-        .addEventListener("input", (e) => {
-          settings.morseFrequency = parseFloat(e.target.value);
-          morsePanel.querySelector("#an-morse-freq-val").textContent =
-            `${Math.round(settings.morseFrequency)}Hz`;
-          Settings.save();
-        });
-      morsePanel
-        .querySelector("#an-morse-vol")
-        .addEventListener("input", (e) => {
-          settings.morseVolume = parseFloat(e.target.value);
-          morsePanel.querySelector("#an-morse-vol-val").textContent =
-            `${Math.round(settings.morseVolume * 100)}%`;
-          Settings.save();
-        });
-      morsePanel
-        .querySelector("#an-morse-monitor")
-        .addEventListener("input", (e) => {
-          settings.morseMonitorVolume = parseFloat(e.target.value);
-          morsePanel.querySelector("#an-morse-monitor-val").textContent =
-            `${Math.round(settings.morseMonitorVolume * 100)}%`;
-          Settings.save();
-        });
-      morsePanel.querySelector("#an-morse-send-btn").onclick = () =>
-        Morse.send(morsePanel.querySelector("#an-morse-text").value);
-      morsePanel.querySelector("#an-morse-sos-btn").onclick = () => {
-        morsePanel.querySelector("#an-morse-text").value = "SOS";
-        settings.morseLastMessage = "SOS";
-        Settings.save();
-        Morse.send("SOS");
-      };
-      const tapBtn = morsePanel.querySelector("#an-morse-tap-btn");
-      const tapStart = (e) => {
-        e.preventDefault();
-        Morse.startTap();
-      };
-      const tapStop = (e) => {
-        e.preventDefault();
-        Morse.stopTap();
-      };
-      tapBtn.addEventListener("mousedown", tapStart);
-      tapBtn.addEventListener("touchstart", tapStart, { passive: false });
-      tapBtn.addEventListener("mouseup", tapStop);
-      tapBtn.addEventListener("mouseleave", tapStop);
-      tapBtn.addEventListener("touchend", tapStop);
-      tapBtn.addEventListener("touchcancel", tapStop);
-      Morse.syncUi();
 
       // IP-чекер панель
       const ipBlock = document.createElement("div");
@@ -2733,21 +2331,7 @@
       copyLogBtn.className = "an-reset-btn";
       copyLogBtn.textContent = "Копировать лог";
       copyLogBtn.onclick = () => EventLog.copy();
-      const compactBtn = document.createElement("button");
-      compactBtn.className = "an-reset-btn";
-      compactBtn.id = "an-compact-btn";
-      compactBtn.textContent = settings.compactMode
-        ? "Полный режим"
-        : "Компактный режим";
-      compactBtn.onclick = () => {
-        settings.compactMode = !settings.compactMode;
-        Settings.save();
-        this.root.classList.toggle("an-compact", settings.compactMode);
-        compactBtn.textContent = settings.compactMode
-          ? "Полный режим"
-          : "Компактный режим";
-      };
-      actionsGrid.append(resetAudioBtn, resetStatsBtn, copyLogBtn, compactBtn);
+      actionsGrid.append(resetAudioBtn, resetStatsBtn, copyLogBtn);
       body.appendChild(actionsGrid);
 
       const resetBtn = document.createElement("button");
@@ -2835,7 +2419,6 @@
                 .an-minimized .an-arrow{transform:rotate(-90deg)}
                 .an-minimized .an-body{display:none}
                 .an-body{padding:14px;overflow-y:auto;max-height:70vh}
-                .an-compact .an-sub,.an-compact .an-ip-block,.an-compact .an-panel,.an-compact .an-actions-grid,.an-compact .an-divider:nth-of-type(n+3),.an-compact .an-row:nth-of-type(n+9),.an-compact input[type=range]:nth-of-type(n+2){display:none}
 
                 .an-stats{background:rgba(56,139,253,0.08);border:1px solid rgba(56,139,253,0.15);border-radius:10px;padding:12px;margin-bottom:12px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center}
                 .an-stat-item{display:flex;flex-direction:column;gap:2px}
