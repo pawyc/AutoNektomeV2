@@ -64,10 +64,6 @@
       src: buildRepoSoundUrl("запуск_для_подставки_конфига.wav"),
       volume: 0.75,
     },
-    welcomeBack: {
-      src: buildRepoSoundUrl("welcome-home-from-jarvis.mp3"),
-      volume: 0.8,
-    },
     drisnyaEnable: {
       src: DRISNYA_ASSETS.enableSound,
       volume: 0.85,
@@ -613,7 +609,10 @@
     },
     apply() {
       this.ensureStyle();
-      document.body.classList.toggle(this.activeClass, Boolean(settings.drisnyaMode));
+      document.body.classList.toggle(
+        this.activeClass,
+        Boolean(settings.drisnyaMode),
+      );
     },
   };
 
@@ -908,7 +907,9 @@
 
     stopPreview() {
       if (this.previewStream) {
-        this.previewStream.getTracks().forEach((t) => t.stop());
+        this.previewStream.getTracks().forEach((t) => {
+          t.stop();
+        });
         this.previewStream = null;
       }
     },
@@ -1152,14 +1153,14 @@
       this.isMicMuted = muted;
       // Мьютим оригинальный поток
       if (AudioEngine.rawStream) {
-        AudioEngine.rawStream
-          .getAudioTracks()
-          .forEach((t) => (t.enabled = !muted));
+        AudioEngine.rawStream.getAudioTracks().forEach((t) => {
+          t.enabled = !muted;
+        });
       }
       if (AudioEngine.activeStream) {
-        AudioEngine.activeStream
-          .getAudioTracks()
-          .forEach((t) => (t.enabled = !muted));
+        AudioEngine.activeStream.getAudioTracks().forEach((t) => {
+          t.enabled = !muted;
+        });
       }
       UI.updateButtons();
     },
@@ -1559,7 +1560,8 @@
         else if (!hasTimer && this.lastTimerState) State.endConversation();
         else if (!hasTimer && !State.isInConversation) {
           const searchBtn = Utils.getEl("searchBtn");
-          const isSearchAvailable = !!searchBtn && searchBtn.offsetParent !== null;
+          const isSearchAvailable =
+            !!searchBtn && searchBtn.offsetParent !== null;
           State.isSearching = isSearchAvailable;
           Sounds.syncDrisnyaLoop();
         }
@@ -1767,7 +1769,9 @@
             await AudioEngine.initWorklet();
           const outputStream = await AudioEngine.setInputStream(rawStream);
           if (State.isMicMuted)
-            rawStream.getAudioTracks().forEach((t) => (t.enabled = false));
+            rawStream.getAudioTracks().forEach((t) => {
+              t.enabled = false;
+            });
           return outputStream;
         } catch (e) {
           Utils.log("getUserMedia error: " + e.message, "error");
@@ -1784,7 +1788,9 @@
     styleEl: null,
     _cache: {},
     apply(name) {
-      settings.selectedTheme = name;
+      const themeName =
+        name || settings.selectedTheme || defaultSettings.selectedTheme;
+      settings.selectedTheme = themeName;
       Settings.save();
       if (this.styleEl) {
         this.styleEl.remove();
@@ -1793,22 +1799,22 @@
       document.body.classList.remove("night_theme");
       document.documentElement.style.background = "";
       document.body.style.background = "";
-      if (name === "GitHub Dark" && THEMES[name]) {
+      if (themeName === "GitHub Dark" && THEMES[themeName]) {
         document.body.classList.add("night_theme");
         document.documentElement.style.background = "#0d1117";
         document.body.style.background = "#0d1117";
         this.styleEl = document.createElement("style");
         document.head.append(this.styleEl);
-        if (this._cache[name]) {
-          this.styleEl.textContent = this._cache[name];
+        if (this._cache[themeName]) {
+          this.styleEl.textContent = this._cache[themeName];
         } else {
-          fetch(THEMES[name])
+          fetch(THEMES[themeName])
             .then((r) => {
               if (!r.ok) throw new Error(`HTTP ${r.status}`);
               return r.text();
             })
             .then((css) => {
-              this._cache[name] = css;
+              this._cache[themeName] = css;
               if (this.styleEl) this.styleEl.textContent = css;
             })
             .catch((e) => {
@@ -1817,6 +1823,7 @@
             });
         }
       }
+      DrisnyaMode.apply();
     },
   };
 
@@ -2042,6 +2049,47 @@
     },
   };
 
+  const ConfirmDialog = {
+    activeOverlay: null,
+    showDanger({
+      message,
+      confirmText = "Да",
+      cancelText = "Отмена",
+      onConfirm,
+      onCancel,
+    }) {
+      if (this.activeOverlay) this.activeOverlay.remove();
+      const overlay = document.createElement("div");
+      overlay.className = "an-confirm-overlay";
+      overlay.innerHTML = `
+        <div class="an-confirm-dialog an-confirm-dialog-danger" role="dialog" aria-modal="true" aria-labelledby="an-confirm-title">
+          <div id="an-confirm-title" class="an-confirm-title">${message}</div>
+          <div class="an-confirm-actions">
+            <button type="button" class="an-reset-btn" data-action="cancel">${cancelText}</button>
+            <button type="button" class="an-reset-btn danger" data-action="confirm">${confirmText}</button>
+          </div>
+        </div>
+      `;
+      const close = (confirmed) => {
+        if (this.activeOverlay === overlay) this.activeOverlay = null;
+        overlay.remove();
+        if (confirmed) onConfirm?.();
+        else onCancel?.();
+      };
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) close(false);
+      });
+      overlay
+        .querySelector('[data-action="cancel"]')
+        .addEventListener("click", () => close(false));
+      overlay
+        .querySelector('[data-action="confirm"]')
+        .addEventListener("click", () => close(true));
+      this.activeOverlay = overlay;
+      document.body.appendChild(overlay);
+    },
+  };
+
   // ==========================================
   // UI
   // ==========================================
@@ -2049,6 +2097,7 @@
     root: null,
     btnMic: null,
     btnHead: null,
+    btnDrisnya: null,
     statusEl: null,
     statusTextEl: null,
     statsEl: null,
@@ -2631,6 +2680,39 @@
       };
       body.appendChild(resetBtn);
 
+      this.btnDrisnya = document.createElement("button");
+      this.btnDrisnya.id = "an-drisnya-btn";
+      this.btnDrisnya.className = "an-reset-btn an-drisnya-btn";
+      this.btnDrisnya.textContent = "drisnya_mode";
+      this.btnDrisnya.onclick = () => {
+        if (settings.drisnyaMode) {
+          settings.drisnyaMode = false;
+          Settings.save();
+          DrisnyaMode.apply();
+          Sounds.stopLoop();
+          this.updateDrisnyaButton();
+          Toast.show("drisnya_mode выкл", "info");
+          return;
+        }
+        ConfirmDialog.showDanger({
+          message: "Вы точно готовы?",
+          confirmText: "Готов",
+          cancelText: "Не сейчас",
+          onConfirm: () => {
+            settings.drisnyaMode = true;
+            Settings.save();
+            Themes.apply(settings.selectedTheme);
+            this.updateDrisnyaButton();
+            if (settings.soundsEnabled && Sounds.isUnlocked) {
+              Sounds.play("drisnyaEnable");
+            }
+            Sounds.syncDrisnyaLoop();
+            Toast.show("drisnya_mode вкл", "warning");
+          },
+        });
+      };
+      body.appendChild(this.btnDrisnya);
+
       this.root.append(head, body);
       document.body.appendChild(this.root);
       if (settings.panelPosition && window.innerWidth > 600) {
@@ -2639,6 +2721,7 @@
         this.root.style.right = "auto";
       }
       this.updateButtons();
+      this.updateDrisnyaButton();
       this.refreshBasic();
     },
 
@@ -2721,6 +2804,14 @@
                 .an-log-item{font-size:11px;line-height:1.4;color:#c9d1d9;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
                 .an-log-item:last-child{border-bottom:none}
                 .an-actions-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+                .an-drisnya-btn{border-color:rgba(248,81,73,0.45);color:#ffd2cf;background:rgba(108,16,14,0.72);font-weight:700;letter-spacing:0.05em;text-transform:lowercase}
+                .an-drisnya-btn:hover{border-color:#ff6f61;color:#fff;background:rgba(148,24,20,0.84)}
+                .an-drisnya-btn.active{box-shadow:0 0 0 1px rgba(255,134,124,0.24),0 0 18px rgba(161,32,26,0.34);background:rgba(142,27,21,0.9);color:#fff0ee}
+                .an-confirm-overlay{position:fixed;inset:0;z-index:10003;background:rgba(19,6,4,0.82);display:flex;align-items:center;justify-content:center;padding:20px}
+                .an-confirm-dialog{width:min(360px,100%);border-radius:16px;padding:18px;border:1px solid rgba(255,255,255,0.08);box-shadow:0 18px 40px rgba(0,0,0,0.4)}
+                .an-confirm-dialog-danger{background:linear-gradient(180deg,rgba(46,12,9,0.98),rgba(24,8,7,0.98));border-color:rgba(248,81,73,0.24)}
+                .an-confirm-title{font-size:20px;font-weight:800;color:#ffd7d4;text-align:center;margin-bottom:16px}
+                .an-confirm-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
             `;
       const style = document.createElement("style");
       style.id = "an-styles";
@@ -2802,6 +2893,15 @@
         this.btnHead.querySelector("span:last-child").textContent =
           State.isHeadphonesMuted ? "Выкл" : "Звук";
       }
+      this.updateDrisnyaButton();
+    },
+
+    updateDrisnyaButton() {
+      if (!this.btnDrisnya) return;
+      this.btnDrisnya.classList.toggle("active", Boolean(settings.drisnyaMode));
+      this.btnDrisnya.title = settings.drisnyaMode
+        ? "Режим активен"
+        : "Включить drisnya_mode";
     },
 
     updateToggle(key, val) {
@@ -2907,6 +3007,9 @@
       this.updateStats();
       this.updateDiagnostics();
       this.updateEventLog();
+      this.updateDrisnyaButton();
+      DrisnyaMode.apply();
+      Sounds.syncDrisnyaLoop();
       if (this.presetSelect)
         this.presetSelect.value = settings.selectedPreset || "custom";
       if (
@@ -2943,10 +3046,6 @@
         State.wasHidden = true;
         return;
       }
-      if (State.didInitComplete && State.wasHidden) {
-        State.wasHidden = false;
-        Sounds.play("welcomeBack");
-      }
     });
 
     const unlock = () => {
@@ -2961,6 +3060,7 @@
     Observer.init();
     Diagnostics.runSelfCheck();
     UI.refreshBasic();
+    Sounds.stopLoop();
 
     if (settings.voiceControl) VoiceControl.toggle(true);
     Onboarding.maybeShow();
