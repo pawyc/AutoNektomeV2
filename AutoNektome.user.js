@@ -1562,7 +1562,7 @@
           const searchBtn = Utils.getEl("searchBtn");
           const isSearchAvailable =
             !!searchBtn && searchBtn.offsetParent !== null;
-          State.isSearching = isSearchAvailable;
+          State.isSearching = State.isSearching && !isSearchAvailable;
           Sounds.syncDrisnyaLoop();
         }
         this.lastTimerState = hasTimer;
@@ -2704,6 +2704,7 @@
             Themes.apply(settings.selectedTheme);
             this.updateDrisnyaButton();
             if (settings.soundsEnabled && Sounds.isUnlocked) {
+              Sounds.clearQueue(true);
               Sounds.play("drisnyaEnable");
             }
             Sounds.syncDrisnyaLoop();
