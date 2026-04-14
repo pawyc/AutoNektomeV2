@@ -180,6 +180,60 @@
         }
     };
 
+    const BrowserSupport = {
+        getSpeechRecognitionCtor() {
+            return globalThis.SpeechRecognition
+                || globalThis.webkitSpeechRecognition
+                || globalThis.mozSpeechRecognition
+                || window.SpeechRecognition
+                || window.webkitSpeechRecognition
+                || window.mozSpeechRecognition
+                || null;
+        },
+        getBrowserName() {
+            const ua = navigator.userAgent || "";
+            if (/Firefox/i.test(ua)) return "Firefox";
+            if (/Edg/i.test(ua)) return "Edge";
+            if (/Chrome|Chromium/i.test(ua)) return "Chrome";
+            if (/Safari/i.test(ua) && !/Chrome|Chromium|Edg/i.test(ua)) return "Safari";
+            return "browser";
+        },
+        getVoiceControlSupport() {
+            const ctor = this.getSpeechRecognitionCtor();
+            const isSecureContextAvailable = typeof window.isSecureContext === "boolean" ? window.isSecureContext : location.protocol === "https:";
+
+            if (!isSecureContextAvailable) {
+                return {
+                    supported: false,
+                    ctor: null,
+                    message: "Голосовое управление требует HTTPS-контекст и доступ к микрофону."
+                };
+            }
+
+            if (ctor) {
+                return {
+                    supported: true,
+                    ctor,
+                    message: ""
+                };
+            }
+
+            if (this.getBrowserName() === "Firefox") {
+                return {
+                    supported: false,
+                    ctor: null,
+                    message: "Firefox в текущей конфигурации не предоставляет SpeechRecognition. Скрипт автоматически включит голосовой режим, если API доступен в вашей сборке браузера."
+                };
+            }
+
+            return {
+                supported: false,
+                ctor: null,
+                message: "Браузер не предоставляет SpeechRecognition для голосового управления."
+            };
+        }
+    };
+
     // ==========================================
     // НАСТРОЙКИ
     // ==========================================
@@ -729,6 +783,7 @@
         currentSessionTime: 0,
         timerInterval: null,
         recognition: null,
+        recognitionCtor: null,
         sessionCount: 0,
         sessionTalkTime: 0,
         skippedUsersCount: 0,
@@ -928,9 +983,20 @@
     // ==========================================
     const VoiceControl = {
         init() {
-            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SR) { settings.voiceControl = false; return false; }
-            State.recognition = new SR();
+            const support = BrowserSupport.getVoiceControlSupport();
+            if (!support.supported || !support.ctor) {
+                settings.voiceControl = false;
+                State.recognition = null;
+                State.recognitionCtor = null;
+                return false;
+            }
+
+            if (State.recognition && State.recognitionCtor === support.ctor) return true;
+
+            try { State.recognition?.stop(); } catch (e) { }
+
+            State.recognition = new support.ctor();
+            State.recognitionCtor = support.ctor;
             State.recognition.continuous = true;
             State.recognition.lang = "ru-RU";
             State.recognition.onresult = (e) => {
@@ -958,11 +1024,12 @@
         },
         toggle(enable) {
             if (enable) {
-                if (!State.recognition && !this.init()) {
-                    // SR API недоступен — сбросить у UI
+                if (!this.init()) {
+                    const support = BrowserSupport.getVoiceControlSupport();
                     settings.voiceControl = false;
                     UI.updateToggle('voiceControl', false);
-                    Toast.show('Голос. управление не поддерживается браузером', 'error');
+                    Diagnostics.runSelfCheck();
+                    Toast.show(support.message || 'Голосовое управление недоступно', 'error');
                     return;
                 }
                 try { State.recognition.start(); } catch (e) { }
@@ -1298,8 +1365,8 @@
         runSelfCheck() {
             this.setIssue('searchBtn', Utils.getEl('searchBtn') ? '' : 'Не найдена кнопка поиска. Возможно, сайт изменил верстку.');
             this.setIssue('audio', Utils.getEl('audioElement') ? '' : 'Не найден аудио-элемент. Управление звуком может не сработать.');
-            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-            this.setIssue('speech', settings.voiceControl && !SR ? 'Браузер не поддерживает SpeechRecognition.' : '');
+            const voiceSupport = BrowserSupport.getVoiceControlSupport();
+            this.setIssue('speech', settings.voiceControl && !voiceSupport.supported ? voiceSupport.message : '');
         },
         getSummary() {
             return this.issues.length ? this.issues[0].message : 'Ошибок не обнаружено';
