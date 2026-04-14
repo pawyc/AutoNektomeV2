@@ -33,8 +33,19 @@
 
   const SOUND_REPO_BASE =
     "https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/sound/";
+  const DRISNYA_REPO_BASE =
+    "https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/drisnya_mode/";
+  const buildRepoAssetUrl = (baseUrl, fileName) =>
+    `${baseUrl}${encodeURIComponent(fileName)}`;
   const buildRepoSoundUrl = (fileName) =>
-    `${SOUND_REPO_BASE}${encodeURIComponent(fileName)}`;
+    buildRepoAssetUrl(SOUND_REPO_BASE, fileName);
+  const buildDrisnyaAssetUrl = (fileName) =>
+    buildRepoAssetUrl(DRISNYA_REPO_BASE, fileName);
+  const DRISNYA_ASSETS = {
+    backgroundImage: buildDrisnyaAssetUrl("drisnya.jpg"),
+    enableSound: buildDrisnyaAssetUrl("загрузка.mp3"),
+    waitingLoop: buildDrisnyaAssetUrl("wait_mode.mp3"),
+  };
 
   const SOUNDS = {
     conversationStart: {
@@ -56,6 +67,14 @@
     welcomeBack: {
       src: buildRepoSoundUrl("welcome-home-from-jarvis.mp3"),
       volume: 0.8,
+    },
+    drisnyaEnable: {
+      src: DRISNYA_ASSETS.enableSound,
+      volume: 0.85,
+    },
+    drisnyaWaiting: {
+      src: DRISNYA_ASSETS.waitingLoop,
+      volume: 0.45,
     },
     skipMilestone: {
       src: buildRepoSoundUrl("после_5_проскипанных_людей.wav"),
