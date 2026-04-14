@@ -14,7 +14,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "6.1";
+  const VERSION = "6.2";
   const STORAGE_KEY = "AutoNektomeSettings_v4";
   const MIN_CONVERSATION_SECONDS = 3;
 
@@ -3046,6 +3046,11 @@
         State.wasHidden = true;
         return;
       }
+
+      if (!State.wasHidden) return;
+      State.wasHidden = false;
+      if (!State.didInitComplete) return;
+      Sounds.play("welcomeBack");
     });
 
     const unlock = () => {
@@ -3060,7 +3065,7 @@
     Observer.init();
     Diagnostics.runSelfCheck();
     UI.refreshBasic();
-    Sounds.stopLoop();
+    Sounds.syncDrisnyaLoop();
 
     if (settings.voiceControl) VoiceControl.toggle(true);
     Onboarding.maybeShow();
