@@ -31,10 +31,20 @@
         chevron: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`
     };
 
+    const SOUND_REPO_BASE = "https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/sound/";
+    const buildRepoSoundUrl = (fileName) => `${SOUND_REPO_BASE}${encodeURIComponent(fileName)}`;
+
     const SOUNDS = {
-        start: "https://zvukogram.com/mp3/22/skype-sound-message-received-message-received.mp3",
-        end: "https://www.myinstants.com/media/sounds/teleport1_Cw1ot9l.mp3",
-        startVol: 0.4, endVol: 0.3
+        conversationStart: { src: "https://zvukogram.com/mp3/22/skype-sound-message-received-message-received.mp3", volume: 0.4 },
+        conversationEnd: { src: "https://www.myinstants.com/media/sounds/teleport1_Cw1ot9l.mp3", volume: 0.3 },
+        startupSuccess: { src: buildRepoSoundUrl("запуск_успешный.wav"), volume: 0.75 },
+        restoredConfig: { src: buildRepoSoundUrl("запуск_для_подставки_конфига.wav"), volume: 0.75 },
+        welcomeBack: { src: buildRepoSoundUrl("welcome-home-from-jarvis.mp3"), volume: 0.8 },
+        skipMilestone: { src: buildRepoSoundUrl("после_5_проскипанных_людей.wav"), volume: 0.8 },
+        manualSkipVariants: [
+            { src: buildRepoSoundUrl("yes (1).wav"), volume: 0.75 },
+            { src: buildRepoSoundUrl("yes (2).wav"), volume: 0.75 }
+        ]
     };
 
     const PRESETS = {
@@ -151,6 +161,22 @@
             const styles = { info: 'color:#58a6ff', warn: 'color:#d29922', error: 'color:#f85149', success: 'color:#238636' };
             console.log(`%c[AutoNektome v${VERSION}] ${msg}`, styles[type] || styles.info);
             if (typeof EventLog !== "undefined") EventLog.add(msg, type);
+        },
+        normalizeCommandText(text) {
+            return String(text || '')
+                .toLowerCase()
+                .replace(/[.,!?;:()[\]{}"'`~@#$%^&*_+=<>\\/|-]+/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        },
+        containsCommand(transcript, command) {
+            const normalizedTranscript = this.normalizeCommandText(transcript);
+            const normalizedCommand = this.normalizeCommandText(command);
+            if (!normalizedTranscript || !normalizedCommand) return false;
+            if (normalizedTranscript === normalizedCommand) return true;
+            return normalizedTranscript.includes(` ${normalizedCommand} `)
+                || normalizedTranscript.startsWith(`${normalizedCommand} `)
+                || normalizedTranscript.endsWith(` ${normalizedCommand}`);
         }
     };
 
@@ -175,7 +201,8 @@
         compactMode: false,
         panelPosition: null,
         selectedPreset: "custom",
-        onboardingDone: false
+        onboardingDone: false,
+        stopWord: ""
     };
 
     let settings = { ...defaultSettings };
@@ -187,11 +214,13 @@
             Object.assign(settings, preset);
             settings.selectedPreset = name;
             Settings.save();
+            Sounds.syncEnabledState();
         },
         resetAudio() {
             for (const key of AUDIO_SETTING_KEYS) settings[key] = defaultSettings[key];
             settings.selectedPreset = "custom";
             Settings.save();
+            Sounds.syncEnabledState();
         },
         resetStats() {
             settings.conversationCount = 0;
@@ -224,8 +253,12 @@
         load() {
             try {
                 const saved = localStorage.getItem(STORAGE_KEY);
-                if (saved) settings = { ...defaultSettings, ...JSON.parse(saved) };
+                if (!saved) return false;
+                settings = { ...defaultSettings, ...JSON.parse(saved) };
+                settings.stopWord = typeof settings.stopWord === 'string' ? settings.stopWord : defaultSettings.stopWord;
+                return true;
             } catch (e) { Utils.log('Ошибка загрузки настроек', 'error'); }
+            return false;
         },
         save() {
             try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); }
@@ -698,6 +731,9 @@
         recognition: null,
         sessionCount: 0,
         sessionTalkTime: 0,
+        skippedUsersCount: 0,
+        wasHidden: false,
+        didInitComplete: false,
 
         setAutoMode(enabled) {
             this.isAutoMode = enabled;
@@ -739,14 +775,14 @@
                 UI.updateLiveTimer();
                 if (!this._autoSkipFired && settings.autoSkipAfter > 0 && this.currentSessionTime >= settings.autoSkipAfter) {
                     this._autoSkipFired = true;
-                    Actions.skip();
+                    Actions.skip('auto');
                 }
             }, 1000);
 
             UI.updateStatus('talking');
             UI.updateLiveTimer();
             EventLog.add('Найден собеседник', 'success');
-            if (settings.soundsEnabled) Sounds.playStart();
+            Sounds.playStart();
             Toast.show('Собеседник найден!', 'success');
         },
 
@@ -777,7 +813,7 @@
             this.conversationStartTime = null;
             this.currentSessionTime = 0;
             UI.refreshBasic();
-            if (settings.soundsEnabled) Sounds.playEnd();
+            Sounds.playEnd();
         }
     };
 
@@ -794,9 +830,17 @@
                 btn.click();
             }
         },
-        skip() {
+        skip(source = 'manual') {
             const stop = Utils.getEl("stopBtn");
-            if (stop) { stop.click(); setTimeout(() => { const c = Utils.getEl("confirmBtn"); if (c) c.click(); }, 300); }
+            if (!stop) return;
+            State.skippedUsersCount += 1;
+            if (source === 'manual') Sounds.playRandomManualSkip();
+            if (State.skippedUsersCount % 5 === 0) Sounds.play('skipMilestone');
+            stop.click();
+            setTimeout(() => {
+                const c = Utils.getEl("confirmBtn");
+                if (c) c.click();
+            }, 300);
         }
     };
 
@@ -804,13 +848,79 @@
     // ЗВУКИ
     // ==========================================
     const Sounds = {
-        start: null, end: null,
+        queue: [], currentAudio: null, isPlaying: false, isUnlocked: false, unlockHandler: null,
         init() {
-            this.start = new Audio(SOUNDS.start); this.start.volume = SOUNDS.startVol;
-            this.end = new Audio(SOUNDS.end); this.end.volume = SOUNDS.endVol;
+            this.queue = [];
+            this.currentAudio = null;
+            this.isPlaying = false;
+            this.isUnlocked = false;
+            if (this.unlockHandler) {
+                document.removeEventListener('click', this.unlockHandler, true);
+                document.removeEventListener('keydown', this.unlockHandler, true);
+            }
+            this.unlockHandler = () => {
+                this.isUnlocked = true;
+                document.removeEventListener('click', this.unlockHandler, true);
+                document.removeEventListener('keydown', this.unlockHandler, true);
+                this.flushQueue();
+            };
+            document.addEventListener('click', this.unlockHandler, true);
+            document.addEventListener('keydown', this.unlockHandler, true);
         },
-        playStart() { this.start?.play().catch(() => { }); },
-        playEnd() { this.end?.play().catch(() => { }); }
+        clearQueue(stopCurrent = false) {
+            this.queue = [];
+            if (stopCurrent && this.currentAudio) {
+                this.currentAudio.pause();
+                this.currentAudio.currentTime = 0;
+                this.currentAudio = null;
+                this.isPlaying = false;
+            }
+        },
+        syncEnabledState() {
+            if (!settings.soundsEnabled) this.clearQueue(true);
+        },
+        play(key) {
+            if (!settings.soundsEnabled) return;
+            const sound = SOUNDS[key];
+            if (!sound) return;
+            this.enqueue(sound);
+        },
+        playRandomManualSkip() {
+            if (!settings.soundsEnabled || !SOUNDS.manualSkipVariants.length) return;
+            const index = Math.floor(Math.random() * SOUNDS.manualSkipVariants.length);
+            this.enqueue(SOUNDS.manualSkipVariants[index]);
+        },
+        playStart() { this.play('conversationStart'); },
+        playEnd() { this.play('conversationEnd'); },
+        enqueue(sound) {
+            if (!sound?.src) return;
+            this.queue.push(sound);
+            this.flushQueue();
+        },
+        flushQueue() {
+            if (this.isPlaying || !this.isUnlocked || !this.queue.length) return;
+            const nextSound = this.queue.shift();
+            const audio = new Audio(nextSound.src);
+            audio.volume = nextSound.volume ?? 1;
+            audio.preload = 'auto';
+            this.currentAudio = audio;
+            this.isPlaying = true;
+
+            let finished = false;
+            const finalize = () => {
+                if (finished) return;
+                finished = true;
+                audio.removeEventListener('ended', finalize);
+                audio.removeEventListener('error', finalize);
+                if (this.currentAudio === audio) this.currentAudio = null;
+                this.isPlaying = false;
+                this.flushQueue();
+            };
+
+            audio.addEventListener('ended', finalize, { once: true });
+            audio.addEventListener('error', finalize, { once: true });
+            audio.play().catch(finalize);
+        }
     };
 
     // ==========================================
@@ -824,10 +934,19 @@
             State.recognition.continuous = true;
             State.recognition.lang = "ru-RU";
             State.recognition.onresult = (e) => {
-                const t = e.results[e.results.length - 1][0].transcript.toLowerCase().trim();
-                if (VOICE_COMMANDS.skip.some(w => t.includes(w))) Actions.skip();
-                if (VOICE_COMMANDS.stop.some(w => t.includes(w))) { State.setAutoMode(false); Actions.skip(); }
-                if (VOICE_COMMANDS.start.some(w => t.includes(w))) State.setAutoMode(true);
+                const t = e.results[e.results.length - 1][0].transcript;
+                const customStopWord = Utils.normalizeCommandText(settings.stopWord);
+                const stopTriggers = customStopWord ? [...VOICE_COMMANDS.stop, customStopWord] : VOICE_COMMANDS.stop;
+                if (stopTriggers.some((w) => Utils.containsCommand(t, w))) {
+                    State.setAutoMode(false);
+                    Actions.skip('voice-stop');
+                    return;
+                }
+                if (VOICE_COMMANDS.skip.some((w) => Utils.containsCommand(t, w))) {
+                    Actions.skip('voice-skip');
+                    return;
+                }
+                if (VOICE_COMMANDS.start.some((w) => Utils.containsCommand(t, w))) State.setAutoMode(true);
             };
             State.recognition.onend = () => { if (settings.voiceControl) setTimeout(() => { try { State.recognition?.start(); } catch (e) { } }, 100); };
             State.recognition.onerror = (e) => {
@@ -863,7 +982,7 @@
                 switch (e.code) {
                     case 'KeyM': State.setMicMuted(!State.isMicMuted); break;
                     case 'KeyH': State.setHeadphonesMuted(!State.isHeadphonesMuted); break;
-                    case 'KeyS': Actions.skip(); break;
+                    case 'KeyS': Actions.skip('manual'); break;
                     case 'KeyA': State.setAutoMode(!State.isAutoMode); break;
                     case 'Space': if (!State.isInConversation && !State.isSearching) { e.preventDefault(); Actions.clickSearch(); } break;
                 }
@@ -1356,7 +1475,7 @@
             controls.className = "an-controls";
             this.btnMic = this.createButton(ICONS.mic, 'Мик', () => State.setMicMuted(!State.isMicMuted), 'mic');
             this.btnHead = this.createButton(ICONS.headphones, 'Звук', () => State.setHeadphonesMuted(!State.isHeadphonesMuted), 'head');
-            const btnSkip = this.createButton(ICONS.skip, 'Скип', () => Actions.skip());
+            const btnSkip = this.createButton(ICONS.skip, 'Скип', () => Actions.skip('manual'));
             const btnSearch = this.createButton(ICONS.search, 'Поиск', () => Actions.clickSearch());
             controls.append(this.btnMic, this.btnHead, btnSkip, btnSearch);
             body.appendChild(controls);
@@ -1391,7 +1510,11 @@
 
             body.appendChild(this.createDivider('Основное'));
             this.renderToggle(body, "Авторежим", "autoMode", State.isAutoMode, (v) => State.setAutoMode(v));
-            this.renderToggle(body, "Звуки", "soundsEnabled", settings.soundsEnabled, (v) => { settings.soundsEnabled = v; Settings.save(); });
+            this.renderToggle(body, "Звуки", "soundsEnabled", settings.soundsEnabled, (v) => {
+                settings.soundsEnabled = v;
+                Settings.save();
+                if (!v) Sounds.clearQueue(true);
+            });
             this.renderToggle(body, "Горячие клавиши", "hotkeysEnabled", settings.hotkeysEnabled, (v) => { settings.hotkeysEnabled = v; Settings.save(); });
             // Авто-скип: скипает собеседника после N секунд разговора
             const asRow = document.createElement("div");
@@ -1454,6 +1577,17 @@
 
             this.renderToggle(body, "Шумоподавление", "noiseSuppression", settings.noiseSuppression, (v) => { settings.noiseSuppression = v; Settings.save(); });
             this.renderToggle(body, "Голос. управление", "voiceControl", settings.voiceControl, (v) => { settings.voiceControl = v; Settings.save(); VoiceControl.toggle(v); });
+            const stopWordPanel = document.createElement("div");
+            stopWordPanel.className = "an-panel";
+            stopWordPanel.innerHTML = `
+                <div class="an-help">Свое стоп-слово для голосовой остановки и скипа. Работает вместе со стандартными командами.</div>
+                <input id="an-stop-word" class="an-input" type="text" maxlength="40" placeholder="Например: домой" value="${(settings.stopWord || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">
+            `;
+            body.appendChild(stopWordPanel);
+            stopWordPanel.querySelector('#an-stop-word').addEventListener('input', (e) => {
+                settings.stopWord = e.target.value.trim();
+                Settings.save();
+            });
 
             // Лаги голоса
             this.renderToggle(body, "⚡ Лаги голоса", "lagEnabled", settings.lagEnabled, (v) => {
@@ -1695,7 +1829,9 @@
                 input[type=range]{width:100%;height:4px;-webkit-appearance:none;background:rgba(255,255,255,0.1);border-radius:4px;outline:none}
                 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;background:#58a6ff;border-radius:50%;cursor:pointer}
 
-                .an-select{background:rgba(0,0,0,0.3);color:#e6edf3;padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.08);font-size:12px;cursor:pointer;min-width:100px}
+                .an-select,.an-input{background:rgba(0,0,0,0.3);color:#e6edf3;padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.08);font-size:12px;box-sizing:border-box}
+                .an-select{cursor:pointer;min-width:100px}
+                .an-input{width:100%}
                 .an-textarea{width:100%;min-height:64px;resize:vertical;background:rgba(0,0,0,0.3);color:#e6edf3;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);font-size:12px;box-sizing:border-box;margin-bottom:8px}
                 .an-reset-btn{width:100%;margin-top:12px;padding:8px;background:transparent;border:1px solid rgba(255,255,255,0.08);color:#7d8590;border-radius:8px;cursor:pointer;font-size:11px;transition:all 0.2s}
                 .an-reset-btn:hover{border-color:#f85149;color:#f85149}
@@ -1849,12 +1985,23 @@
     // ==========================================
     function init() {
         Utils.log('Запуск...', 'info');
-        Settings.load();
+        const restoredSettings = Settings.load();
         Sounds.init();
         if (settings.enableIpChecker) IPChecker.init();
         else IPChecker.disable();
         MediaHook.init();
         Hotkeys.init();
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                State.wasHidden = true;
+                return;
+            }
+            if (State.didInitComplete && State.wasHidden) {
+                State.wasHidden = false;
+                Sounds.play('welcomeBack');
+            }
+        });
 
         const unlock = () => { AudioEngine.getContext(); document.removeEventListener('click', unlock, true); };
         document.addEventListener('click', unlock, true);
@@ -1868,6 +2015,9 @@
 
         if (settings.voiceControl) VoiceControl.toggle(true);
         Onboarding.maybeShow();
+        if (restoredSettings) Sounds.play('restoredConfig');
+        Sounds.play('startupSuccess');
+        State.didInitComplete = true;
 
         Utils.log('Готов!', 'success');
         Toast.show(`AutoNektome v${VERSION}`, 'success');
