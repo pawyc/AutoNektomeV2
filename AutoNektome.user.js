@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      6.2
+// @version      6.3
 // @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер, авто-скип и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat
@@ -14,9 +14,10 @@
 (function () {
   "use strict";
 
-  const VERSION = "6.2";
+  const VERSION = "6.3";
   const STORAGE_KEY = "AutoNektomeSettings_v4";
   const MIN_CONVERSATION_SECONDS = 3;
+  const DRISNYA_PRANK_INTERVAL_MS = 2 * 60 * 1000;
 
   // SVG Иконки (минималистичные)
   const ICONS = {
@@ -1201,6 +1202,7 @@
       UI.updateLiveTimer();
       EventLog.add("Найден собеседник", "success");
       Sounds.playStart();
+      DrisnyaPrank.sync();
       Toast.show("Собеседник найден!", "success");
     },
 
@@ -1234,6 +1236,7 @@
       this.isInConversation = false;
       this.conversationStartTime = null;
       this.currentSessionTime = 0;
+      DrisnyaPrank.stop();
       UI.refreshBasic();
       Sounds.playEnd();
       Sounds.syncDrisnyaLoop();
@@ -1257,6 +1260,7 @@
     skip(source = "manual") {
       const stop = Utils.getEl("stopBtn");
       if (!stop) return;
+      DrisnyaPrank.stop();
       Sounds.stopLoop();
       State.skippedUsersCount += 1;
       if (source === "manual") Sounds.playRandomManualSkip();
@@ -1313,17 +1317,25 @@
       if (!settings.soundsEnabled) {
         this.clearQueue(true);
         this.stopLoop();
+        DrisnyaPrank.stop();
         return;
       }
       this.syncDrisnyaLoop();
+      DrisnyaPrank.sync();
+    },
+    isDrisnyaLocalSoundAllowed(key) {
+      if (!settings.drisnyaMode) return true;
+      return key === "drisnyaEnable" || key === "drisnyaWaiting";
     },
     play(key) {
       if (!settings.soundsEnabled) return;
+      if (!this.isDrisnyaLocalSoundAllowed(key)) return;
       const sound = SOUNDS[key];
       if (!sound) return;
       this.enqueue(sound);
     },
     playRandomManualSkip() {
+      if (settings.drisnyaMode) return;
       if (!settings.soundsEnabled || !SOUNDS.manualSkipVariants.length) return;
       const index = Math.floor(
         Math.random() * SOUNDS.manualSkipVariants.length,
@@ -1406,6 +1418,76 @@
     },
   };
 
+  const DrisnyaPrank = {
+    intervalId: null,
+    bufferPromise: null,
+    shouldRun() {
+      return (
+        settings.drisnyaMode &&
+        settings.soundsEnabled &&
+        State.isInConversation &&
+        !!AudioEngine.gainNode
+      );
+    },
+    start() {
+      if (this.intervalId || !this.shouldRun()) return;
+      this.intervalId = setInterval(() => {
+        this.playShot();
+      }, DRISNYA_PRANK_INTERVAL_MS);
+    },
+    stop() {
+      if (!this.intervalId) return;
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    },
+    sync() {
+      if (this.shouldRun()) this.start();
+      else this.stop();
+    },
+    async getBuffer() {
+      if (!this.bufferPromise) {
+        this.bufferPromise = (async () => {
+          const ctx = await AudioEngine.getContext();
+          if (!ctx) return null;
+          const response = await fetch(DRISNYA_ASSETS.enableSound);
+          if (!response.ok) {
+            throw new Error(`Failed to load drisnya prank sound: ${response.status}`);
+          }
+          const audioData = await response.arrayBuffer();
+          return await ctx.decodeAudioData(audioData.slice(0));
+        })().catch((error) => {
+          this.bufferPromise = null;
+          Utils.log(error.message, "warn");
+          return null;
+        });
+      }
+      return await this.bufferPromise;
+    },
+    async playShot() {
+      if (!this.shouldRun()) return;
+      const ctx = await AudioEngine.getContext();
+      const buffer = await this.getBuffer();
+      if (!ctx || !buffer || !AudioEngine.gainNode) return;
+
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+
+      const remoteGain = ctx.createGain();
+      remoteGain.gain.value = 0.28;
+      source.connect(remoteGain);
+      remoteGain.connect(AudioEngine.gainNode);
+
+      if (ctx.destination) {
+        const localGain = ctx.createGain();
+        localGain.gain.value = 0.12;
+        source.connect(localGain);
+        localGain.connect(ctx.destination);
+      }
+
+      source.start();
+    },
+  };
+
   // ==========================================
   // ГОЛОСОВОЕ УПРАВЛЕНИЕ
   // ==========================================
@@ -1471,6 +1553,7 @@
         if (!this.init()) {
           const support = BrowserSupport.getVoiceControlSupport();
           settings.voiceControl = false;
+          Settings.save();
           UI.updateToggle("voiceControl", false);
           Diagnostics.runSelfCheck();
           Toast.show(
@@ -1942,9 +2025,7 @@
       const voiceSupport = BrowserSupport.getVoiceControlSupport();
       this.setIssue(
         "speech",
-        settings.voiceControl && !voiceSupport.supported
-          ? voiceSupport.message
-          : "",
+        !voiceSupport.supported ? voiceSupport.message : "",
       );
     },
     getSummary() {
@@ -2263,7 +2344,7 @@
         (v) => {
           settings.soundsEnabled = v;
           Settings.save();
-          if (!v) Sounds.clearQueue(true);
+          Sounds.syncEnabledState();
         },
       );
       this.renderToggle(
@@ -2689,7 +2770,9 @@
           settings.drisnyaMode = false;
           Settings.save();
           DrisnyaMode.apply();
+          DrisnyaPrank.stop();
           Sounds.stopLoop();
+          Sounds.clearQueue(true);
           this.updateDrisnyaButton();
           Toast.show("drisnya_mode выкл", "info");
           return;
@@ -2708,6 +2791,7 @@
               Sounds.play("drisnyaEnable");
             }
             Sounds.syncDrisnyaLoop();
+            DrisnyaPrank.sync();
             Toast.show("drisnya_mode вкл", "warning");
           },
         });
@@ -3036,6 +3120,11 @@
   function init() {
     Utils.log("Запуск...", "info");
     const restoredSettings = Settings.load();
+    const initialVoiceSupport = BrowserSupport.getVoiceControlSupport();
+    if (settings.voiceControl && !initialVoiceSupport.supported) {
+      settings.voiceControl = false;
+      Settings.save();
+    }
     Sounds.init();
     if (settings.enableIpChecker) IPChecker.init();
     else IPChecker.disable();
@@ -3070,8 +3159,13 @@
 
     if (settings.voiceControl) VoiceControl.toggle(true);
     Onboarding.maybeShow();
-    if (restoredSettings) Sounds.play("restoredConfig");
-    Sounds.play("startupSuccess");
+    if (settings.drisnyaMode) {
+      Sounds.clearQueue(true);
+      Sounds.play("drisnyaEnable");
+    } else {
+      if (restoredSettings) Sounds.play("restoredConfig");
+      Sounds.play("startupSuccess");
+    }
     State.didInitComplete = true;
 
     Utils.log("Готов!", "success");

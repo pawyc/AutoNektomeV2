@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      6.2
+// @version      6.3
 // @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер, авто-скип и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat
