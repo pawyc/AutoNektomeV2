@@ -1557,6 +1557,12 @@
           /^\d{1,2}:\d{2}/.test(timerText);
         if (hasTimer && !this.lastTimerState) State.startConversation();
         else if (!hasTimer && this.lastTimerState) State.endConversation();
+        else if (!hasTimer && !State.isInConversation) {
+          const searchBtn = Utils.getEl("searchBtn");
+          const isSearchAvailable = !!searchBtn && searchBtn.offsetParent !== null;
+          State.isSearching = isSearchAvailable;
+          Sounds.syncDrisnyaLoop();
+        }
         this.lastTimerState = hasTimer;
 
         const audio = Utils.getEl("audioElement");
