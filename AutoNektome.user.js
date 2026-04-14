@@ -1272,11 +1272,14 @@
     isPlaying: false,
     isUnlocked: false,
     unlockHandler: null,
+    loopAudio: null,
+    loopKey: "",
     init() {
       this.queue = [];
       this.currentAudio = null;
       this.isPlaying = false;
       this.isUnlocked = false;
+      this.stopLoop();
       if (this.unlockHandler) {
         document.removeEventListener("click", this.unlockHandler, true);
         document.removeEventListener("keydown", this.unlockHandler, true);
@@ -1286,6 +1289,7 @@
         document.removeEventListener("click", this.unlockHandler, true);
         document.removeEventListener("keydown", this.unlockHandler, true);
         this.flushQueue();
+        this.syncDrisnyaLoop();
       };
       document.addEventListener("click", this.unlockHandler, true);
       document.addEventListener("keydown", this.unlockHandler, true);
@@ -1300,7 +1304,12 @@
       }
     },
     syncEnabledState() {
-      if (!settings.soundsEnabled) this.clearQueue(true);
+      if (!settings.soundsEnabled) {
+        this.clearQueue(true);
+        this.stopLoop();
+        return;
+      }
+      this.syncDrisnyaLoop();
     },
     play(key) {
       if (!settings.soundsEnabled) return;
@@ -1325,6 +1334,45 @@
       if (!sound?.src) return;
       this.queue.push(sound);
       this.flushQueue();
+    },
+    playLoop(key) {
+      if (!settings.soundsEnabled || !this.isUnlocked) return;
+      const sound = SOUNDS[key];
+      if (!sound?.src) return;
+      if (this.loopAudio && this.loopKey === key) return;
+      this.stopLoop();
+      const audio = new Audio(sound.src);
+      audio.volume = sound.volume ?? 1;
+      audio.preload = "auto";
+      audio.loop = true;
+      this.loopAudio = audio;
+      this.loopKey = key;
+      audio.play().catch(() => {
+        if (this.loopAudio === audio) {
+          this.loopAudio = null;
+          this.loopKey = "";
+        }
+      });
+    },
+    stopLoop() {
+      if (!this.loopAudio) {
+        this.loopKey = "";
+        return;
+      }
+      this.loopAudio.pause();
+      this.loopAudio.currentTime = 0;
+      this.loopAudio = null;
+      this.loopKey = "";
+    },
+    syncDrisnyaLoop() {
+      const shouldPlay =
+        settings.drisnyaMode &&
+        settings.soundsEnabled &&
+        this.isUnlocked &&
+        State.isSearching &&
+        !State.isInConversation;
+      if (shouldPlay) this.playLoop("drisnyaWaiting");
+      else this.stopLoop();
     },
     flushQueue() {
       if (this.isPlaying || !this.isUnlocked || !this.queue.length) return;
