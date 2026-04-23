@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      6.3
+// @version      6.4
 // @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер, авто-скип и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
-// @match        https://nekto.me/audiochat
+// @match        https://nekto.me/audiochat*
+// @match        https://www.nekto.me/audiochat*
 // @grant        none
+// @run-at       document-idle
 // @license      MIT
 // @downloadURL  https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/AutoNektome.user.js
 // @updateURL    https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/AutoNektome.meta.js
@@ -14,7 +16,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "6.3";
+  const VERSION = "6.4";
   const STORAGE_KEY = "AutoNektomeSettings_v4";
   const MIN_CONVERSATION_SECONDS = 3;
   const DRISNYA_PRANK_INTERVAL_MS = 2 * 60 * 1000;
@@ -196,6 +198,7 @@
     ],
     stopBtn: [
       "button.callScreen__cancelCallBtn",
+      "button.stop-scan-button",
       "button.stop-talk-button",
       ".active-button-icon",
     ],
@@ -208,14 +211,26 @@
   // УТИЛИТЫ
   // ==========================================
   const Utils = {
+    isVisible(el) {
+      return !!(
+        el &&
+        (el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+      );
+    },
+    isActionReady(el) {
+      return this.isVisible(el) && !el.disabled;
+    },
     getEl(key) {
       const selectors = SELECTORS[key];
       if (Array.isArray(selectors)) {
+        let firstMatch = null;
         for (const sel of selectors) {
           const el = document.querySelector(sel);
-          if (el) return el;
+          if (!el) continue;
+          if (!firstMatch) firstMatch = el;
+          if (this.isActionReady(el)) return el;
         }
-        return null;
+        return firstMatch;
       }
       return document.querySelector(selectors);
     },
