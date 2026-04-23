@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      6.10
+// @version      6.11
 // @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat*
@@ -16,13 +16,15 @@
 (function () {
   "use strict";
 
-  const VERSION = "6.10";
+  const VERSION = "6.11";
   const STORAGE_KEY = "AutoNektomeSettings_v4";
   const MIN_CONVERSATION_SECONDS = 3;
   const DRISNYA_PRANK_MIN_DELAY_MS = 5 * 1000;
   const DRISNYA_PRANK_MAX_DELAY_MS = 2 * 60 * 1000;
   const POOP_SQUASH_RADIUS = 30;
   const POOP_SQUASH_MS = 650;
+  const POOP_BURST_MS = 720;
+  const POOP_COMBO_MS = 1400;
 
   // SVG Иконки (минималистичные)
   const ICONS = {
@@ -501,6 +503,16 @@
         body.${this.activeClass} #an-root{border-color:rgba(163,94,52,0.35);box-shadow:0 8px 32px rgba(39,20,8,0.5);background:rgba(28,17,11,0.94)}
         body.${this.activeClass} .an-title{color:#ff9a57}
         body.${this.activeClass} .an-stats{background:rgba(121,75,36,0.14);border-color:rgba(166,99,53,0.26)}
+        body.${this.activeClass} :where(main,#app,#root,.container,.content,.page-content,[class*="audio"],[class*="chat"],[class*="roulette"]){--an-drisnya-brown:#6f3f20;--an-drisnya-gold:#f2b35d;--an-drisnya-cream:#ffe2bb}
+        body.${this.activeClass} :where(main,#app,#root,.container,.content,.page-content,[class*="audio"],[class*="chat"],[class*="roulette"]) :where(section,form,.card,.panel,[class*="form"],[class*="settings"],[class*="content"]){border-color:rgba(159,94,48,0.48)!important;box-shadow:0 0 0 1px rgba(255,184,96,0.12),0 18px 55px rgba(40,20,8,0.62)!important;background:linear-gradient(180deg,rgba(36,22,14,0.96),rgba(21,14,10,0.96))!important}
+        body.${this.activeClass} :where(h1,h2,h3,[class*="title"]){color:#ffb46d!important;text-shadow:0 2px 0 rgba(54,28,12,0.95),0 0 18px rgba(255,142,61,0.28)!important}
+        body.${this.activeClass} :where(h1,h2,h3,[class*="title"])::before{content:"💩 ";filter:drop-shadow(0 2px 3px rgba(0,0,0,0.55))}
+        body.${this.activeClass} :where(label,p,span,li){text-shadow:0 1px 1px rgba(0,0,0,0.45)}
+        body.${this.activeClass} :where(button,.btn,a[class*="btn"],input[type="button"],input[type="submit"]){border-radius:14px!important;border:1px solid rgba(255,187,99,0.35)!important;background:linear-gradient(180deg,#8b5328,#5c3218)!important;color:#fff3df!important;box-shadow:inset 0 1px 0 rgba(255,255,255,0.18),0 5px 0 #2f180c,0 12px 24px rgba(38,17,7,0.35)!important;transition:transform .16s ease,filter .16s ease,box-shadow .16s ease!important}
+        body.${this.activeClass} :where(button,.btn,a[class*="btn"],input[type="button"],input[type="submit"]):hover{animation:anDrisnyaWiggle .34s ease;filter:saturate(1.15) brightness(1.08)!important;transform:translateY(-1px) rotate(-0.5deg)!important}
+        body.${this.activeClass} :where(button.active,.btn.active,.active,button[aria-pressed="true"],input:checked+label){background:linear-gradient(180deg,#d89142,#7a421d)!important;color:#1d0f08!important;box-shadow:inset 0 1px 0 rgba(255,255,255,0.35),0 4px 0 #3a1d0d,0 0 22px rgba(234,154,67,0.28)!important}
+        body.${this.activeClass} :where(input,select,textarea){border-color:rgba(255,184,96,0.35)!important;background:rgba(39,23,14,0.88)!important;color:#ffe2bb!important}
+        @keyframes anDrisnyaWiggle{0%,100%{transform:translateY(-1px) rotate(0deg)}25%{transform:translateY(-2px) rotate(-1.3deg)}50%{transform:translateY(0) rotate(1.2deg)}75%{transform:translateY(-1px) rotate(-.7deg)}}
       `;
       document.head.appendChild(style);
     },
@@ -1768,6 +1780,11 @@
     ctx: null,
     rafId: null,
     parts: [],
+    bursts: [],
+    floaters: [],
+    combo: 0,
+    comboUntil: 0,
+    score: 0,
     enabled: false,
     init() {
       this.canvas = document.createElement("canvas");
@@ -1837,18 +1854,155 @@
       poop.squashedUntil = Date.now() + POOP_SQUASH_MS;
       poop.vx = 0;
       poop.vy = 0;
+      this.registerPoopHit(poop);
       event.preventDefault();
       event.stopPropagation();
+    },
+    registerPoopHit(poop) {
+      const now = Date.now();
+      this.combo = now <= this.comboUntil ? this.combo + 1 : 1;
+      this.comboUntil = now + POOP_COMBO_MS;
+      this.score += this.combo;
+      this.spawnBurst(poop.x, poop.y, this.combo);
+      this.spawnFloater(poop.x, poop.y, `x${this.combo}`);
+      this.scatterNearbyPoops(poop.x, poop.y, this.combo);
+      this.playSquashSound(this.combo).catch((error) => {
+        Utils.log(`Poop pop sound failed: ${error.message}`, "warn");
+      });
+    },
+    spawnBurst(x, y, combo) {
+      const count = Math.min(22, 8 + combo * 2);
+      const items = [];
+      for (let i = 0; i < count; i++) {
+        items.push({
+          angle: Math.random() * Math.PI * 2,
+          speed: 24 + Math.random() * (34 + combo * 2),
+          size: 2 + Math.random() * 5,
+          wobble: Math.random() * Math.PI * 2,
+        });
+      }
+      this.bursts.push({ x, y, startedAt: Date.now(), items });
+    },
+    spawnFloater(x, y, text) {
+      this.floaters.push({ x, y, text, startedAt: Date.now() });
+    },
+    scatterNearbyPoops(x, y, combo) {
+      const power = Math.min(2.4, 0.7 + combo * 0.12);
+      this.parts.forEach((p) => {
+        if (p.squashedUntil) return;
+        const dx = p.x - x;
+        const dy = p.y - y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (!d || d > 170) return;
+        const push = (1 - d / 170) * power;
+        p.vx += (dx / d) * push;
+        p.vy += (dy / d) * push;
+      });
+    },
+    async playSquashSound(combo) {
+      if (!settings.soundsEnabled) return;
+      const ctx = await AudioEngine.getContext();
+      if (!ctx) return;
+      const startAt = ctx.currentTime;
+      const duration = 0.16;
+      const volume = Math.min(0.16, 0.07 + combo * 0.01);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, startAt);
+      gain.gain.exponentialRampToValueAtTime(volume, startAt + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+
+      const oscillator = ctx.createOscillator();
+      oscillator.type = "triangle";
+      oscillator.frequency.setValueAtTime(170 + combo * 10, startAt);
+      oscillator.frequency.exponentialRampToValueAtTime(48, startAt + duration);
+
+      const buffer = ctx.createBuffer(
+        1,
+        Math.floor(ctx.sampleRate * duration),
+        ctx.sampleRate,
+      );
+      const channel = buffer.getChannelData(0);
+      for (let i = 0; i < channel.length; i++) {
+        const t = i / channel.length;
+        channel[i] = (Math.random() * 2 - 1) * (1 - t) * (1 - t);
+      }
+
+      const noise = ctx.createBufferSource();
+      const filter = ctx.createBiquadFilter();
+      noise.buffer = buffer;
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(620 + combo * 25, startAt);
+      filter.Q.value = 0.8;
+
+      oscillator.connect(gain);
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      oscillator.start(startAt);
+      noise.start(startAt);
+      oscillator.stop(startAt + duration);
+      noise.stop(startAt + duration);
     },
     moveParticle(p, w, h) {
       p.x += p.vx;
       p.y += p.vy;
+      p.vx *= 0.992;
+      p.vy *= 0.992;
       if (p.x < 0 || p.x > w) p.vx *= -1;
       if (p.y < 0 || p.y > h) p.vy *= -1;
     },
     drawPoop(p) {
       this.ctx.font = `${Math.round(p.size || 24)}px Arial`;
       this.ctx.fillText("\uD83D\uDCA9", p.x, p.y);
+    },
+    drawBursts(now) {
+      this.bursts = this.bursts.filter((burst) => {
+        const progress = (now - burst.startedAt) / POOP_BURST_MS;
+        if (progress >= 1) return false;
+        const alpha = 1 - progress;
+        this.ctx.save();
+        this.ctx.globalAlpha = alpha;
+        this.ctx.strokeStyle = `rgba(255,181,84,${0.6 * alpha})`;
+        this.ctx.lineWidth = 2;
+        this.ctx.beginPath();
+        this.ctx.arc(burst.x, burst.y, 12 + progress * 44, 0, Math.PI * 2);
+        this.ctx.stroke();
+        burst.items.forEach((item, index) => {
+          const distance = item.speed * progress;
+          const wobble = Math.sin(progress * 8 + item.wobble) * 5;
+          const x = burst.x + Math.cos(item.angle) * distance + wobble;
+          const y = burst.y + Math.sin(item.angle) * distance + progress * 14;
+          this.ctx.fillStyle =
+            index % 3 === 0
+              ? `rgba(255,185,88,${alpha})`
+              : `rgba(111,63,32,${alpha})`;
+          this.ctx.beginPath();
+          this.ctx.arc(x, y, item.size * (1 - progress * 0.35), 0, Math.PI * 2);
+          this.ctx.fill();
+        });
+        this.ctx.restore();
+        return true;
+      });
+    },
+    drawFloaters(now) {
+      this.floaters = this.floaters.filter((floater) => {
+        const progress = (now - floater.startedAt) / 900;
+        if (progress >= 1) return false;
+        this.ctx.save();
+        this.ctx.globalAlpha = 1 - progress;
+        this.ctx.font = "700 18px Arial";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillStyle = "#ffcf7a";
+        this.ctx.strokeStyle = "rgba(45,22,9,0.85)";
+        this.ctx.lineWidth = 4;
+        const y = floater.y - 24 - progress * 36;
+        this.ctx.strokeText(floater.text, floater.x, y);
+        this.ctx.fillText(floater.text, floater.x, y);
+        this.ctx.restore();
+        return true;
+      });
     },
     drawSquashedPoop(p) {
       this.ctx.save();
@@ -1894,12 +2048,16 @@
           if (d < 10000) {
             this.ctx.strokeStyle = `rgba(88,166,255,${0.12 * (1 - d / 10000)})`;
             this.ctx.beginPath();
-            this.ctx.moveTo(p.x, p.y);
-            this.ctx.lineTo(p2.x, p2.y);
-            this.ctx.stroke();
+          this.ctx.moveTo(p.x, p.y);
+          this.ctx.lineTo(p2.x, p2.y);
+          this.ctx.stroke();
             }
           }
         }
+      }
+      if (settings.drisnyaMode) {
+        this.drawBursts(now);
+        this.drawFloaters(now);
       }
       this.rafId = requestAnimationFrame(() => this.loop());
     },
