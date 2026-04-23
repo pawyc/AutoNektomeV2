@@ -2264,20 +2264,14 @@
         "enableLoopback",
         settings.enableLoopback,
         (v) => {
-          settings.enableLoopback = v;
-          Settings.save();
           document.getElementById("sub-loopback")?.classList.toggle("open", v);
-          if (v && !AudioEngine.activeStream) AudioEngine.startPreview();
-          else {
-            AudioEngine.rebuildChain();
-            if (!v && !AudioEngine.activeStream) AudioEngine.stopPreview();
-          }
+          AudioEngine.setLoopbackEnabled(v);
         },
       );
       const loopSub = this.createSubPanel(
         "sub-loopback",
         settings.enableLoopback,
-        "🔊 Громкость в ухо",
+        "Громкость самопрослушивания",
       );
       loopSub.appendChild(
         this.createRange(0, 2, 0.1, settings.gainValue, (v) => {
@@ -2294,9 +2288,7 @@
         "voiceEnhance",
         settings.voiceEnhance,
         (v) => {
-          settings.voiceEnhance = v;
-          Settings.save();
-          AudioEngine.rebuildChain();
+          AudioEngine.setVoiceEnhanceEnabled(v);
         },
       );
       this.renderToggle(
@@ -2305,13 +2297,8 @@
         "voicePitch",
         settings.voicePitch,
         (v) => {
-          settings.voicePitch = v;
-          Settings.save();
           document.getElementById("sub-pitch")?.classList.toggle("open", v);
-          // initWorklet() — async! rebuildChain только ПОСЛЕ загрузки воркла
-          if (v)
-            AudioEngine.initWorklet().then(() => AudioEngine.rebuildChain());
-          else AudioEngine.rebuildChain();
+          AudioEngine.setVoicePitchEnabled(v);
         },
       );
       const pitchSub = this.createSubPanel(
@@ -2334,8 +2321,7 @@
         "noiseSuppression",
         settings.noiseSuppression,
         (v) => {
-          settings.noiseSuppression = v;
-          Settings.save();
+          AudioEngine.setNoiseSuppressionEnabled(v);
         },
       );
       this.renderToggle(
