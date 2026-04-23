@@ -859,6 +859,7 @@
         );
         return;
       }
+      Diagnostics.setIssue("noiseSuppression", "");
 
       const tracks = new Set();
       [this.rawStream, this.previewStream].forEach((stream) => {

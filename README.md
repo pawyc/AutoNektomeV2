@@ -1,6 +1,6 @@
 # AutoNektome V2
 
-![Версия](https://img.shields.io/badge/версия-6.8-brightgreen)
+![Версия](https://img.shields.io/badge/версия-6.9-brightgreen)
 ![Лицензия](https://img.shields.io/badge/лицензия-MIT-blue)
 ![Платформа](https://img.shields.io/badge/Chromium%20%2B%20Tampermonkey-userscript-yellowgreen)
 
@@ -34,7 +34,7 @@ Userscript для [nekto.me/audiochat#/](https://nekto.me/audiochat#/) с авт
 - Авто-режим: автоматический запуск поиска нового собеседника.
 - Горячие клавиши: быстрые действия с клавиатуры.
 - Голосовое управление: команды `старт`, `стоп`, `скип`.
-- Аудио-настройки: loopback, шумоподавление, pitch shift, voice enhance, lag effect.
+- Аудио-настройки: stereo loopback, шумоподавление, pitch shift, voice enhance, lag effect.
 - UI-панель: статус, статистика, таймер разговора и быстрые кнопки.
 - Темы и фоновые эффекты.
 - Скрытие нижнего промо-блока NektoMe с Google Play/App Store.
