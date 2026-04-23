@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      6.7
+// @version      6.8
 // @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "6.7";
+  const VERSION = "6.8";
   const STORAGE_KEY = "AutoNektomeSettings_v4";
   const MIN_CONVERSATION_SECONDS = 3;
   const DRISNYA_PRANK_INTERVAL_MS = 2 * 60 * 1000;
@@ -357,6 +357,7 @@
     lagIntensity: 0.5,
     enableIpChecker: false,
     drisnyaMode: false,
+    developerMode: false,
     panelPosition: null,
     selectedPreset: "custom",
     onboardingDone: false,
@@ -1380,6 +1381,7 @@
             if (State.isHeadphonesMuted) audio.muted = true;
           };
         }
+        SiteCleanup.hidePromotionalBlocks();
         Diagnostics.runSelfCheck();
       }, 100);
       this.observer = new MutationObserver(check);
@@ -1833,6 +1835,53 @@
     },
   };
 
+  const SiteCleanup = {
+    styleId: "an-site-cleanup-style",
+    selectors: [
+      ".users-count-panel",
+      ".chat-step.idle a[href*='play.google.com']",
+      ".chat-step.idle a[href*='ios-chat-ruletka']",
+      ".chat-step.idle img[src*='gplay']",
+      ".chat-step.idle img[src*='appstore']",
+      ".chat-step.idle img[alt*='Google Play']",
+      ".chat-step.idle img[alt*='AppStore']",
+    ],
+    init() {
+      this.injectStyles();
+      this.hidePromotionalBlocks();
+    },
+    injectStyles() {
+      if (document.getElementById(this.styleId)) return;
+      const style = document.createElement("style");
+      style.id = this.styleId;
+      style.textContent = `
+        .users-count-panel,
+        .chat-step.idle a[href*="play.google.com"],
+        .chat-step.idle a[href*="ios-chat-ruletka"],
+        .chat-step.idle img[src*="gplay"],
+        .chat-step.idle img[src*="appstore"],
+        .chat-step.idle img[alt*="Google Play"],
+        .chat-step.idle img[alt*="AppStore"]{display:none!important}
+      `;
+      document.head.appendChild(style);
+    },
+    hidePromotionalBlocks() {
+      for (const selector of this.selectors) {
+        document.querySelectorAll(selector).forEach((el) => {
+          el.style.setProperty("display", "none", "important");
+          const parent = el.parentElement;
+          if (
+            parent &&
+            parent.children.length <= 2 &&
+            parent.querySelector('a[href*="play.google.com"],a[href*="ios-chat-ruletka"]')
+          ) {
+            parent.style.setProperty("display", "none", "important");
+          }
+        });
+      }
+    },
+  };
+
   const Onboarding = {
     maybeShow() {
       if (settings.onboardingDone) return;
@@ -2279,19 +2328,6 @@
         },
       );
 
-      body.appendChild(this.createDivider("Вид"));
-      this.renderToggle(
-        body,
-        "Анимация фона",
-        "particlesEnabled",
-        settings.particlesEnabled,
-        (v) => {
-          settings.particlesEnabled = v;
-          Settings.save();
-          Particles.toggle(v);
-        },
-      );
-
       const themeRow = document.createElement("div");
       themeRow.className = "an-row";
       themeRow.innerHTML = "<span>Тема</span>";
@@ -2308,40 +2344,22 @@
       themeRow.appendChild(themeSel);
       body.appendChild(themeRow);
 
-      body.appendChild(this.createDivider("Стабильность"));
-      this.diagnosticsEl = document.createElement("div");
-      this.diagnosticsEl.className = "an-panel";
-      body.appendChild(this.diagnosticsEl);
-
-      body.appendChild(this.createDivider("История"));
-      this.eventLogEl = document.createElement("div");
-      this.eventLogEl.className = "an-panel";
-      body.appendChild(this.eventLogEl);
-
-      const actionsGrid = document.createElement("div");
-      actionsGrid.className = "an-actions-grid";
-      const resetAudioBtn = document.createElement("button");
-      resetAudioBtn.className = "an-reset-btn";
-      resetAudioBtn.textContent = "Сбросить аудио";
-      resetAudioBtn.onclick = () => {
-        Profiles.resetAudio();
-        this.refreshBasic();
-        Toast.show("Аудио-настройки сброшены", "info");
-      };
-      const resetStatsBtn = document.createElement("button");
-      resetStatsBtn.className = "an-reset-btn";
-      resetStatsBtn.textContent = "Сбросить статистику";
-      resetStatsBtn.onclick = () => {
-        Profiles.resetStats();
-        this.refreshBasic();
-        Toast.show("Статистика сброшена", "info");
-      };
-      const copyLogBtn = document.createElement("button");
-      copyLogBtn.className = "an-reset-btn";
-      copyLogBtn.textContent = "Копировать лог";
-      copyLogBtn.onclick = () => EventLog.copy();
-      actionsGrid.append(resetAudioBtn, resetStatsBtn, copyLogBtn);
-      body.appendChild(actionsGrid);
+      body.appendChild(this.createDivider("Разработчик"));
+      const devPanel = document.createElement("div");
+      devPanel.className = "an-panel";
+      body.appendChild(devPanel);
+      this.renderToggle(
+        devPanel,
+        "Режим разработчика",
+        "developerMode",
+        settings.developerMode,
+        (v) => {
+          settings.developerMode = v;
+          Settings.save();
+          this.updateDeveloperPanel();
+        },
+      );
+      this.buildDeveloperPanel(body);
 
       const resetBtn = document.createElement("button");
       resetBtn.className = "an-reset-btn";
@@ -2398,6 +2416,120 @@
       this.updateDrisnyaButton();
       this.refreshBasic();
       requestAnimationFrame(() => this.ensureVisible());
+    },
+
+    buildDeveloperPanel(container) {
+      this.developerPanelEl = document.createElement("div");
+      this.developerPanelEl.id = "an-dev-panel";
+      this.developerPanelEl.className = "an-dev-panel";
+
+      const tabs = document.createElement("div");
+      tabs.className = "an-tabs";
+      const content = document.createElement("div");
+      content.className = "an-tab-content";
+      this.developerTabContentEl = content;
+
+      [
+        ["history", "История"],
+        ["stability", "Стабильность"],
+        ["tools", "Инструменты"],
+      ].forEach(([key, label]) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "an-tab-btn";
+        btn.dataset.tab = key;
+        btn.textContent = label;
+        btn.onclick = () => this.showDeveloperTab(key);
+        tabs.appendChild(btn);
+      });
+
+      this.developerPanelEl.append(tabs, content);
+      container.appendChild(this.developerPanelEl);
+      this.updateDeveloperPanel();
+    },
+
+    updateDeveloperPanel() {
+      if (!this.developerPanelEl) return;
+      this.developerPanelEl.classList.toggle(
+        "open",
+        Boolean(settings.developerMode),
+      );
+      if (settings.developerMode)
+        this.showDeveloperTab(this.activeDeveloperTab || "history");
+    },
+
+    showDeveloperTab(tab) {
+      if (!this.developerPanelEl || !this.developerTabContentEl) return;
+      this.activeDeveloperTab = tab;
+      this.developerPanelEl
+        .querySelectorAll(".an-tab-btn")
+        .forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tab));
+      this.developerTabContentEl.replaceChildren();
+
+      if (tab === "history") {
+        this.developerTabContentEl.appendChild(this.createHistoryPanel());
+        return;
+      }
+      if (tab === "stability") {
+        this.diagnosticsEl = document.createElement("div");
+        this.diagnosticsEl.className = "an-panel";
+        this.developerTabContentEl.appendChild(this.diagnosticsEl);
+        this.updateDiagnostics();
+        return;
+      }
+      this.developerTabContentEl.appendChild(this.createDeveloperToolsPanel());
+    },
+
+    createHistoryPanel() {
+      const wrap = document.createElement("div");
+      wrap.className = "an-panel";
+      this.eventLogEl = document.createElement("div");
+      wrap.appendChild(this.eventLogEl);
+      this.updateEventLog();
+      return wrap;
+    },
+
+    createDeveloperToolsPanel() {
+      const wrap = document.createElement("div");
+      wrap.className = "an-panel";
+
+      this.renderToggle(
+        wrap,
+        "Анимация фона",
+        "particlesEnabled",
+        settings.particlesEnabled,
+        (v) => {
+          settings.particlesEnabled = v;
+          Settings.save();
+          Particles.toggle(v);
+        },
+      );
+
+      const actionsGrid = document.createElement("div");
+      actionsGrid.className = "an-actions-grid";
+      const resetAudioBtn = document.createElement("button");
+      resetAudioBtn.className = "an-reset-btn";
+      resetAudioBtn.textContent = "Сбросить аудио";
+      resetAudioBtn.onclick = () => {
+        Profiles.resetAudio();
+        this.refreshBasic();
+        Toast.show("Аудио-настройки сброшены", "info");
+      };
+      const resetStatsBtn = document.createElement("button");
+      resetStatsBtn.className = "an-reset-btn";
+      resetStatsBtn.textContent = "Сбросить статистику";
+      resetStatsBtn.onclick = () => {
+        Profiles.resetStats();
+        this.refreshBasic();
+        Toast.show("Статистика сброшена", "info");
+      };
+      const copyLogBtn = document.createElement("button");
+      copyLogBtn.className = "an-reset-btn";
+      copyLogBtn.textContent = "Копировать лог";
+      copyLogBtn.onclick = () => EventLog.copy();
+      actionsGrid.append(resetAudioBtn, resetStatsBtn, copyLogBtn);
+      wrap.appendChild(actionsGrid);
+      return wrap;
     },
 
     applyPanelPosition() {
@@ -2518,6 +2650,12 @@
                 .an-log-item{font-size:11px;line-height:1.4;color:#c9d1d9;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
                 .an-log-item:last-child{border-bottom:none}
                 .an-actions-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+                .an-dev-panel{display:none;margin-top:8px}
+                .an-dev-panel.open{display:block}
+                .an-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px}
+                .an-tab-btn{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);color:#7d8590;border-radius:8px;padding:7px 4px;cursor:pointer;font-size:10px}
+                .an-tab-btn.active{background:rgba(56,139,253,0.16);border-color:rgba(88,166,255,0.45);color:#c9d1d9}
+                .an-tab-content .an-panel{margin-bottom:0}
                 .an-drisnya-btn{border-color:rgba(248,81,73,0.45);color:#ffd2cf;background:rgba(108,16,14,0.72);font-weight:700;letter-spacing:0.05em;text-transform:lowercase}
                 .an-drisnya-btn:hover{border-color:#ff6f61;color:#fff;background:rgba(148,24,20,0.84)}
                 .an-drisnya-btn.active{box-shadow:0 0 0 1px rgba(255,134,124,0.24),0 0 18px rgba(161,32,26,0.34);background:rgba(142,27,21,0.9);color:#fff0ee}
@@ -2815,6 +2953,7 @@
       document.addEventListener("click", unlock, true);
 
       runStartupStep("theme", () => Themes.apply(settings.selectedTheme));
+      runStartupStep("site-cleanup", () => SiteCleanup.init());
       runStartupStep("particles", () => Particles.init());
       runStartupStep("observer", () => Observer.init());
       runStartupStep("diagnostics", () => Diagnostics.runSelfCheck());
