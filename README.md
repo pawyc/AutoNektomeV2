@@ -1,10 +1,10 @@
 # AutoNektome V2
 
-![Версия](https://img.shields.io/badge/версия-6.5-brightgreen)
+![Версия](https://img.shields.io/badge/версия-6.6-brightgreen)
 ![Лицензия](https://img.shields.io/badge/лицензия-MIT-blue)
 ![Платформа](https://img.shields.io/badge/Chromium%20%2B%20Tampermonkey-userscript-yellowgreen)
 
-Userscript для [nekto.me/audiochat#/](https://nekto.me/audiochat#/) с авто-поиском, авто-скипом, горячими клавишами, настройками аудио, голосовым управлением и отдельной панелью управления.
+Userscript для [nekto.me/audiochat#/](https://nekto.me/audiochat#/) с авто-поиском, горячими клавишами, настройками аудио, голосовым управлением и отдельной панелью управления.
 
 [![Скачать Tampermonkey](https://img.shields.io/badge/1.%20Скачать-Tampermonkey-black?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
 [![Установить AutoNektome](https://img.shields.io/badge/2.%20Установить-AutoNektome.user.js-darkgreen?logo=tampermonkey&logoColor=white)](https://raw.githubusercontent.com/pawyc/AutoNektomeV2/main/AutoNektome.user.js)
@@ -32,10 +32,9 @@ Userscript для [nekto.me/audiochat#/](https://nekto.me/audiochat#/) с авт
 ## Что умеет
 
 - Авто-режим: автоматический запуск поиска нового собеседника.
-- Авто-скип: завершение разговора через заданное количество секунд.
 - Горячие клавиши: быстрые действия с клавиатуры.
 - Голосовое управление: команды `старт`, `стоп`, `скип`.
-- Аудио-настройки: loopback, усиление микрофона, шумоподавление, pitch shift, voice enhance, lag effect.
+- Аудио-настройки: loopback, шумоподавление, pitch shift, voice enhance, lag effect.
 - UI-панель: статус, статистика, таймер разговора и быстрые кнопки.
 - Темы и фоновые эффекты.
 - IP-чекер через WebRTC ICE: отключен по умолчанию и включается вручную.
@@ -55,6 +54,8 @@ Userscript для [nekto.me/audiochat#/](https://nekto.me/audiochat#/) с авт
 - `скип`, `далее`, `next`
 - `стоп`, `завершить`
 - `старт`, `чат`, `поиск`
+
+Примечание для Chrome и Brave: голосовое управление использует встроенный Web Speech API браузера. Если браузер возвращает `network` или блокирует сервис распознавания речи, скрипт автоматически выключит переключатель и покажет одно диагностическое сообщение вместо повторяющихся уведомлений.
 
 ## Автообновления
 

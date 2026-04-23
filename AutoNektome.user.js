@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      6.5
+// @version      6.6
 // @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер, авто-скип и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "6.5";
+  const VERSION = "6.6";
   const STORAGE_KEY = "AutoNektomeSettings_v4";
   const MIN_CONVERSATION_SECONDS = 3;
   const DRISNYA_PRANK_INTERVAL_MS = 2 * 60 * 1000;
@@ -59,14 +59,6 @@
       src: "https://www.myinstants.com/media/sounds/teleport1_Cw1ot9l.mp3",
       volume: 0.3,
     },
-    startupSuccess: {
-      src: buildRepoSoundUrl("запуск_успешный.wav"),
-      volume: 0.75,
-    },
-    restoredConfig: {
-      src: buildRepoSoundUrl("запуск_для_подставки_конфига.wav"),
-      volume: 0.75,
-    },
     drisnyaEnable: {
       src: DRISNYA_ASSETS.enableSound,
       volume: 0.85,
@@ -97,8 +89,6 @@
       voiceControl: false,
       soundsEnabled: true,
       hotkeysEnabled: true,
-      autoSkipAfter: 0,
-      micGain: 1.0,
       lagEnabled: false,
       lagIntensity: 0.5,
       enableIpChecker: false,
@@ -113,8 +103,6 @@
       voiceControl: false,
       soundsEnabled: true,
       hotkeysEnabled: true,
-      autoSkipAfter: 15,
-      micGain: 1.1,
       lagEnabled: false,
       lagIntensity: 0.5,
       enableIpChecker: false,
@@ -129,8 +117,6 @@
       voiceControl: false,
       soundsEnabled: true,
       hotkeysEnabled: true,
-      autoSkipAfter: 0,
-      micGain: 0.85,
       lagEnabled: false,
       lagIntensity: 0.5,
       enableIpChecker: false,
@@ -145,8 +131,6 @@
       voiceControl: false,
       soundsEnabled: false,
       hotkeysEnabled: true,
-      autoSkipAfter: 0,
-      micGain: 1.0,
       lagEnabled: false,
       lagIntensity: 0.5,
       enableIpChecker: false,
@@ -161,8 +145,6 @@
     "voiceEnhance",
     "noiseSuppression",
     "voiceControl",
-    "autoSkipAfter",
-    "micGain",
     "lagEnabled",
     "lagIntensity",
     "soundsEnabled",
@@ -360,8 +342,6 @@
     isCollapsed: false,
     soundsEnabled: true,
     hotkeysEnabled: true,
-    autoSkipAfter: 0,
-    micGain: 1.0,
     lagEnabled: false,
     lagIntensity: 0.5,
     enableIpChecker: false,
@@ -669,7 +649,7 @@
 
       // Новый gain node
       this.gainNode = ctx.createGain();
-      this.gainNode.gain.value = settings.micGain;
+      this.gainNode.gain.value = 1;
 
       // Новый source
       this.sourceNode = ctx.createMediaStreamSource(stream);
@@ -821,7 +801,7 @@
         this.nodes.lag.port.postMessage(settings.lagIntensity);
       if (this.nodes.loopGain)
         this.nodes.loopGain.gain.value = settings.gainValue;
-      if (this.gainNode) this.gainNode.gain.value = settings.micGain;
+      if (this.gainNode) this.gainNode.gain.value = 1;
     },
   };
 
@@ -840,6 +820,7 @@
     timerInterval: null,
     recognition: null,
     recognitionCtor: null,
+    recognitionRestartTimer: null,
     sessionCount: 0,
     sessionTalkTime: 0,
     skippedUsersCount: 0,
@@ -889,20 +870,11 @@
       this.currentSessionTime = 0;
 
       // Запуск таймера реального времени
-      this._autoSkipFired = false;
       this.timerInterval = setInterval(() => {
         this.currentSessionTime = Math.floor(
           (Date.now() - this.conversationStartTime) / 1000,
         );
         UI.updateLiveTimer();
-        if (
-          !this._autoSkipFired &&
-          settings.autoSkipAfter > 0 &&
-          this.currentSessionTime >= settings.autoSkipAfter
-        ) {
-          this._autoSkipFired = true;
-          Actions.skip("auto");
-        }
       }, 1000);
 
       UI.updateStatus("talking");
@@ -1199,6 +1171,19 @@
   // ГОЛОСОВОЕ УПРАВЛЕНИЕ
   // ==========================================
   const VoiceControl = {
+    stopRestartTimer() {
+      if (!State.recognitionRestartTimer) return;
+      clearTimeout(State.recognitionRestartTimer);
+      State.recognitionRestartTimer = null;
+    },
+    disableWithMessage(message, type = "warning") {
+      this.stopRestartTimer();
+      settings.voiceControl = false;
+      Settings.save();
+      UI.updateToggle("voiceControl", false);
+      Diagnostics.setIssue("speech", message);
+      Toast.show(message, type, 4500);
+    },
     init() {
       const support = BrowserSupport.getVoiceControlSupport();
       if (!support.supported || !support.ctor) {
@@ -1217,7 +1202,9 @@
 
       State.recognition = new support.ctor();
       State.recognitionCtor = support.ctor;
-      State.recognition.continuous = true;
+      State.recognition.continuous = false;
+      State.recognition.interimResults = false;
+      State.recognition.maxAlternatives = 1;
       State.recognition.lang = "ru-RU";
       State.recognition.onresult = (e) => {
         const t = e.results[e.results.length - 1][0].transcript;
@@ -1238,19 +1225,32 @@
           State.setAutoMode(true);
       };
       State.recognition.onend = () => {
-        if (settings.voiceControl)
-          setTimeout(() => {
+        if (settings.voiceControl) {
+          this.stopRestartTimer();
+          State.recognitionRestartTimer = setTimeout(() => {
+            State.recognitionRestartTimer = null;
             try {
               State.recognition?.start();
             } catch (e) {}
-          }, 100);
+          }, 500);
+        }
       };
       State.recognition.onerror = (e) => {
-        if (e.error === "not-allowed")
-          Toast.show("Нет доступа к микрофону (голос. управление)", "error");
-        else if (e.error === "network")
-          Toast.show("Ошибка сети (голос. управление)", "warning");
-        else if (e.error !== "aborted" && e.error !== "no-speech")
+        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+          this.disableWithMessage(
+            "Нет доступа к микрофону для голосового управления.",
+            "error",
+          );
+          return;
+        }
+        if (e.error === "network") {
+          this.disableWithMessage(
+            "Голосовое управление недоступно: Chrome/Brave не подключился к сервису распознавания речи.",
+            "warning",
+          );
+          return;
+        }
+        if (e.error !== "aborted" && e.error !== "no-speech")
           Utils.log("SpeechRecognition error: " + e.error, "warn");
       };
       return true;
@@ -1270,9 +1270,11 @@
           return;
         }
         try {
+          this.stopRestartTimer();
           State.recognition.start();
         } catch (e) {}
       } else {
+        this.stopRestartTimer();
         try {
           State.recognition?.stop();
         } catch (e) {}
@@ -2080,26 +2082,6 @@
           Settings.save();
         },
       );
-      // Авто-скип: скипает собеседника после N секунд разговора
-      const asRow = document.createElement("div");
-      asRow.className = "an-row";
-      asRow.title =
-        "Автоматически скипает собеседника через указанное количество времени разговора. 0 = выключено.";
-      const fmtSkip = (v) =>
-        v === 0
-          ? "Выкл"
-          : v >= 60
-            ? Math.floor(v / 60) + "м" + (v % 60 ? " " + (v % 60) + "с" : "")
-            : v + "с";
-      asRow.innerHTML = `<span>Авто-скип <span style="font-size:10px;color:#484f58">→ скип через</span></span><span id="an-autoskip-val" style="font-size:11px;color:#58a6ff">${fmtSkip(settings.autoSkipAfter)}</span>`;
-      body.appendChild(asRow);
-      body.appendChild(
-        this.createRange(0, 3600, 30, settings.autoSkipAfter, (v) => {
-          settings.autoSkipAfter = v;
-          Settings.save();
-          document.getElementById("an-autoskip-val").textContent = fmtSkip(v);
-        }),
-      );
       const micTestBlock = document.createElement("div");
       micTestBlock.className = "an-panel";
       micTestBlock.innerHTML = `
@@ -2148,21 +2130,6 @@
         }),
       );
       body.appendChild(loopSub);
-
-      // Усиление исходящего сигнала (то, что слышит собеседник)
-      const mgRow = document.createElement("div");
-      mgRow.className = "an-row";
-      mgRow.innerHTML = `<span>🎙️ Усиление микрофона <span style="font-size:10px;color:#484f58">→ собеседнику</span></span><span id="an-micgain-val" style="font-size:11px;color:#58a6ff">${Math.round(settings.micGain * 100)}%</span>`;
-      body.appendChild(mgRow);
-      body.appendChild(
-        this.createRange(0, 2, 0.05, settings.micGain, (v) => {
-          settings.micGain = v;
-          Settings.save();
-          AudioEngine.updateLiveParams();
-          document.getElementById("an-micgain-val").textContent =
-            Math.round(v * 100) + "%";
-        }),
-      );
 
       this.renderToggle(
         body,
@@ -2799,9 +2766,7 @@
   function init() {
     try {
       Utils.log("Запуск...", "info");
-      const restoredSettings = Boolean(
-        runStartupStep("settings", () => Settings.load()),
-      );
+      runStartupStep("settings", () => Settings.load());
       const initialVoiceSupport = BrowserSupport.getVoiceControlSupport();
       if (settings.voiceControl && !initialVoiceSupport.supported) {
         settings.voiceControl = false;
@@ -2827,7 +2792,6 @@
         if (!State.wasHidden) return;
         State.wasHidden = false;
         if (!State.didInitComplete) return;
-        Sounds.play("startupSuccess");
       });
 
       const unlock = () => {
@@ -2849,9 +2813,6 @@
       if (settings.drisnyaMode) {
         Sounds.clearQueue(true);
         Sounds.play("drisnyaEnable");
-      } else {
-        if (restoredSettings) Sounds.play("restoredConfig");
-        Sounds.play("startupSuccess");
       }
       State.didInitComplete = true;
 
