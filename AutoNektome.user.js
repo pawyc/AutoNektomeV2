@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      6.12
+// @version      6.13
 // @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "6.12";
+  const VERSION = "6.13";
   const STORAGE_KEY = "AutoNektomeSettings_v4";
   const MIN_CONVERSATION_SECONDS = 3;
   const DRISNYA_PRANK_MIN_DELAY_MS = 5 * 1000;
@@ -25,6 +25,8 @@
   const POOP_SQUASH_MS = 650;
   const POOP_BURST_MS = 720;
   const POOP_COMBO_MS = 1400;
+  const POOP_SAFE_MARGIN = 34;
+  const POOP_RUSH_MS = 5200;
 
   // SVG Иконки (минималистичные)
   const ICONS = {
@@ -1857,6 +1859,11 @@
     combo: 0,
     comboUntil: 0,
     score: 0,
+    rushLevel: 0,
+    rushUntil: 0,
+    spawnTick: 0,
+    blockedRects: [],
+    blockedRectsAt: 0,
     enabled: false,
     init() {
       this.canvas = document.createElement("canvas");
@@ -1875,6 +1882,7 @@
       if (this.canvas) {
         this.canvas.width = window.innerWidth;
         this.canvas.height = window.innerHeight;
+        this.blockedRectsAt = 0;
         if (this.enabled) this.createParticles();
       }
     },
@@ -1893,20 +1901,142 @@
         }
       }
     },
-    createParticle() {
+    getBaseCount() {
+      return window.innerWidth < 600 ? 16 : 32;
+    },
+    getMaxCount() {
+      return window.innerWidth < 600 ? 58 : 104;
+    },
+    getTargetCount(now = Date.now()) {
+      if (!settings.drisnyaMode || now > this.rushUntil)
+        return this.getBaseCount();
+      const boost = Math.min(72, Math.round(this.rushLevel * 2.2));
+      return Math.min(this.getMaxCount(), this.getBaseCount() + boost);
+    },
+    getElementRect(element) {
+      const rect = element.getBoundingClientRect?.();
+      if (!rect || rect.width < 80 || rect.height < 30) return null;
+      if (
+        rect.right <= 0 ||
+        rect.bottom <= 0 ||
+        rect.left >= window.innerWidth ||
+        rect.top >= window.innerHeight
+      )
+        return null;
+      const width = Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0);
+      const height = Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
+      if (width < 80 || height < 30) return null;
       return {
-        x: Math.random() * this.canvas.width,
-        y: Math.random() * this.canvas.height,
+        left: Math.max(0, rect.left - POOP_SAFE_MARGIN),
+        top: Math.max(0, rect.top - POOP_SAFE_MARGIN),
+        right: Math.min(window.innerWidth, rect.right + POOP_SAFE_MARGIN),
+        bottom: Math.min(window.innerHeight, rect.bottom + POOP_SAFE_MARGIN),
+      };
+    },
+    isUiBlocker(element) {
+      if (!element || element === document.body || element === document.documentElement)
+        return false;
+      if (element === this.canvas || element.closest?.("canvas")) return false;
+      if (element.closest?.("#an-toast-container")) return true;
+      if (element.id === "an-root" || element.closest?.("#an-root")) return true;
+      if (
+        element.matches?.(
+          'header,nav,main,section,form,dialog,[role="dialog"],[role="menu"],[class*="modal" i],[class*="dialog" i],[class*="menu" i],[class*="panel" i],[class*="card" i],[class*="form" i],[class*="content" i],[class*="audio" i],[class*="chat" i],[class*="roulette" i]',
+        )
+      )
+        return true;
+
+      const style = window.getComputedStyle(element);
+      const hasSolidBackground =
+        style.display !== "contents" &&
+        style.visibility !== "hidden" &&
+        style.opacity !== "0" &&
+        style.backgroundColor &&
+        style.backgroundColor !== "rgba(0, 0, 0, 0)" &&
+        style.backgroundColor !== "transparent";
+      if (!hasSolidBackground) return false;
+      const rect = element.getBoundingClientRect?.();
+      if (!rect) return false;
+      const viewportArea = window.innerWidth * window.innerHeight;
+      const area = rect.width * rect.height;
+      return area > 7000 && area < viewportArea * 0.72;
+    },
+    getBlockedRects(now = Date.now()) {
+      if (now - this.blockedRectsAt < 350) return this.blockedRects;
+      this.blockedRectsAt = now;
+      const viewportArea = window.innerWidth * window.innerHeight;
+      const rects = [];
+      document.body.querySelectorAll("*").forEach((element) => {
+        if (!this.isUiBlocker(element)) return;
+        const rect = this.getElementRect(element);
+        if (!rect) return;
+        const area = (rect.right - rect.left) * (rect.bottom - rect.top);
+        if (area >= viewportArea * 0.82) return;
+        rects.push(rect);
+      });
+      this.blockedRects = rects;
+      return rects;
+    },
+    isPointBlocked(x, y, rects, margin = 0) {
+      return rects.some(
+        (rect) =>
+          x >= rect.left - margin &&
+          x <= rect.right + margin &&
+          y >= rect.top - margin &&
+          y <= rect.bottom + margin,
+      );
+    },
+    getSafePoint(size = 24) {
+      const w = this.canvas.width;
+      const h = this.canvas.height;
+      const margin = Math.max(POOP_SAFE_MARGIN, size);
+      const rects = settings.drisnyaMode ? this.getBlockedRects() : [];
+      for (let i = 0; i < 90; i++) {
+        const x = margin + Math.random() * Math.max(1, w - margin * 2);
+        const y = margin + Math.random() * Math.max(1, h - margin * 2);
+        if (!this.isPointBlocked(x, y, rects, margin)) return { x, y };
+      }
+
+      const edgeBands = [
+        { left: margin, right: Math.min(w * 0.28, 220), top: margin, bottom: h - margin },
+        { left: Math.max(margin, w * 0.72), right: w - margin, top: margin, bottom: h - margin },
+        { left: margin, right: w - margin, top: margin, bottom: Math.min(h * 0.18, 150) },
+        { left: margin, right: w - margin, top: Math.max(margin, h * 0.82), bottom: h - margin },
+      ].filter((band) => band.right > band.left && band.bottom > band.top);
+
+      for (let i = 0; i < 60 && edgeBands.length; i++) {
+        const band = edgeBands[Math.floor(Math.random() * edgeBands.length)];
+        const x = band.left + Math.random() * (band.right - band.left);
+        const y = band.top + Math.random() * (band.bottom - band.top);
+        if (!this.isPointBlocked(x, y, rects, margin * 0.55)) return { x, y };
+      }
+
+      return {
+        x: Math.min(w - margin, Math.max(margin, margin + Math.random() * Math.max(1, w - margin * 2))),
+        y: Math.min(h - margin, Math.max(margin, margin + Math.random() * Math.max(1, h - margin * 2))),
+      };
+    },
+    createParticle() {
+      const size = 22 + Math.random() * 10;
+      const point = this.getSafePoint(size);
+      return {
+        x: point.x,
+        y: point.y,
         vx: (Math.random() - 0.5) * 0.3,
         vy: (Math.random() - 0.5) * 0.3,
-        size: 22 + Math.random() * 10,
+        size,
         squashedUntil: 0,
       };
     },
     createParticles() {
       this.parts = [];
-      const count = window.innerWidth < 600 ? 20 : 40;
+      const count = this.getBaseCount();
       for (let i = 0; i < count; i++) this.parts.push(this.createParticle());
+    },
+    addPoops(count) {
+      const limit = this.getMaxCount();
+      const amount = Math.min(count, Math.max(0, limit - this.parts.length));
+      for (let i = 0; i < amount; i++) this.parts.push(this.createParticle());
     },
     findClickedPoop(x, y) {
       for (let i = this.parts.length - 1; i >= 0; i--) {
@@ -1923,21 +2053,31 @@
       if (!this.enabled || !settings.drisnyaMode || !this.canvas) return;
       const poop = this.findClickedPoop(event.clientX, event.clientY);
       if (!poop) return;
-      poop.squashedUntil = Date.now() + POOP_SQUASH_MS;
+      const now = Date.now();
+      const nextCombo = now <= this.comboUntil ? this.combo + 1 : 1;
+      poop.squashedUntil =
+        now + Math.max(140, POOP_SQUASH_MS - nextCombo * 45);
       poop.vx = 0;
       poop.vy = 0;
-      this.registerPoopHit(poop);
+      this.registerPoopHit(poop, now, nextCombo);
       event.preventDefault();
       event.stopPropagation();
     },
-    registerPoopHit(poop) {
-      const now = Date.now();
-      this.combo = now <= this.comboUntil ? this.combo + 1 : 1;
+    registerPoopHit(poop, now = Date.now(), nextCombo = null) {
+      this.combo =
+        nextCombo === null
+          ? now <= this.comboUntil
+            ? this.combo + 1
+            : 1
+          : nextCombo;
       this.comboUntil = now + POOP_COMBO_MS;
       this.score += this.combo;
+      this.rushLevel = Math.min(32, this.rushLevel + 1 + this.combo * 0.3);
+      this.rushUntil = now + POOP_RUSH_MS;
       this.spawnBurst(poop.x, poop.y, this.combo);
       this.spawnFloater(poop.x, poop.y, `x${this.combo}`);
       this.scatterNearbyPoops(poop.x, poop.y, this.combo);
+      this.addPoops(Math.min(10, 1 + Math.floor(this.combo / 2)));
       this.playSquashSound(this.combo).catch((error) => {
         Utils.log(`Poop pop sound failed: ${error.message}`, "warn");
       });
@@ -2016,13 +2156,40 @@
       oscillator.stop(startAt + duration);
       noise.stop(startAt + duration);
     },
-    moveParticle(p, w, h) {
+    maintainRushSpawn(now) {
+      if (!settings.drisnyaMode) return;
+      if (now > this.rushUntil) {
+        this.rushLevel = Math.max(0, this.rushLevel * 0.985 - 0.015);
+        return;
+      }
+      const target = this.getTargetCount(now);
+      if (this.parts.length >= target) return;
+      const interval = Math.max(2, 14 - Math.floor(this.rushLevel / 2));
+      this.spawnTick += 1;
+      if (this.spawnTick % interval === 0) this.addPoops(1);
+    },
+    moveParticle(p, w, h, blockedRects = []) {
+      const previousX = p.x;
+      const previousY = p.y;
       p.x += p.vx;
       p.y += p.vy;
       p.vx *= 0.992;
       p.vy *= 0.992;
-      if (p.x < 0 || p.x > w) p.vx *= -1;
-      if (p.y < 0 || p.y > h) p.vy *= -1;
+      const radius = Math.max(10, (p.size || 24) * 0.65);
+      if (p.x < radius || p.x > w - radius) {
+        p.x = Math.min(w - radius, Math.max(radius, p.x));
+        p.vx *= -1;
+      }
+      if (p.y < radius || p.y > h - radius) {
+        p.y = Math.min(h - radius, Math.max(radius, p.y));
+        p.vy *= -1;
+      }
+      if (this.isPointBlocked(p.x, p.y, blockedRects, radius)) {
+        p.x = previousX;
+        p.y = previousY;
+        p.vx = (p.vx || 0.4) * -1.15 + (Math.random() - 0.5) * 0.35;
+        p.vy = (p.vy || 0.4) * -1.15 + (Math.random() - 0.5) * 0.35;
+      }
     },
     drawPoop(p) {
       this.ctx.font = `${Math.round(p.size || 24)}px Arial`;
@@ -2089,6 +2256,8 @@
       const w = this.canvas.width,
         h = this.canvas.height;
       const now = Date.now();
+      const blockedRects = settings.drisnyaMode ? this.getBlockedRects(now) : [];
+      this.maintainRushSpawn(now);
       this.ctx.clearRect(0, 0, w, h);
       if (settings.drisnyaMode) {
         this.ctx.font = "24px Arial";
@@ -2105,7 +2274,7 @@
             else this.drawSquashedPoop(p);
             continue;
           }
-          this.moveParticle(p, w, h);
+          this.moveParticle(p, w, h, blockedRects);
           this.drawPoop(p);
         } else {
           this.moveParticle(p, w, h);

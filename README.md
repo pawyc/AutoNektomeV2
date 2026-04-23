@@ -1,6 +1,6 @@
 # AutoNektome V2
 
-![Версия](https://img.shields.io/badge/версия-6.12-brightgreen)
+![Версия](https://img.shields.io/badge/версия-6.13-brightgreen)
 ![Лицензия](https://img.shields.io/badge/лицензия-MIT-blue)
 ![Платформа](https://img.shields.io/badge/Chromium%20%2B%20Tampermonkey-userscript-yellowgreen)
 
@@ -37,7 +37,7 @@ Userscript для [nekto.me/audiochat#/](https://nekto.me/audiochat#/) с авт
 - Аудио-настройки: stereo loopback, шумоподавление, pitch shift, voice enhance, lag effect.
 - UI-панель: статус, статистика, таймер разговора и быстрые кнопки.
 - Темы и фоновые эффекты.
-- Drisnya mode: частицы лопаются с локальным pop-звуком, брызгами и combo-анимацией; выбранные кнопки подсвечиваются, а блок цветовой схемы NektoMe скрывается.
+- Drisnya mode: частицы лопаются с локальным pop-звуком, не спавнятся под меню, ускоряются от серии кликов; выбранные кнопки подсвечиваются, а блок цветовой схемы NektoMe скрывается.
 - Скрытие нижнего промо-блока NektoMe с Google Play/App Store.
 - Режим разработчика: история, стабильность, сброс аудио, сброс статистики, копирование лога и анимация фона в отдельной вкладке.
 - IP-чекер через WebRTC ICE: отключен по умолчанию и включается вручную.
