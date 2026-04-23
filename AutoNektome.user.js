@@ -898,12 +898,13 @@
     },
 
     stopPreview() {
-      if (this.previewStream) {
-        this.previewStream.getTracks().forEach((t) => {
-          t.stop();
-        });
-        this.previewStream = null;
-      }
+      if (!this.previewStream) return;
+      const shouldCleanup = this.activeStream === this.previewStream;
+      this.previewStream.getTracks().forEach((t) => {
+        t.stop();
+      });
+      this.previewStream = null;
+      if (shouldCleanup) this.cleanup();
     },
 
     updateLiveParams() {
@@ -1668,16 +1669,9 @@
         AudioEngine.stopPreview();
         IPChecker.reset(); // Сброс IP при каждом новом подключении
         if (constraints?.audio) {
-          // exact: false — отключает нативную обработку в Firefox надёжнее
-          const defaults = {
-            autoGainControl: { exact: false },
-            echoCancellation: { exact: false },
-            noiseSuppression: settings.noiseSuppression,
-          };
-          constraints.audio =
-            typeof constraints.audio === "object"
-              ? { ...constraints.audio, ...defaults }
-              : defaults;
+          constraints.audio = AudioEngine.buildAudioConstraints(
+            constraints.audio,
+          );
         }
         try {
           const rawStream = await this.original(constraints);
