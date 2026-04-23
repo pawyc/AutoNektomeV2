@@ -2,7 +2,7 @@
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
 // @version      6.6
-// @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер, авто-скип и улучшенный UI для nekto.me audiochat
+// @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat*
 // @match        https://www.nekto.me/audiochat*
@@ -1837,7 +1837,7 @@
                     <div style="display:grid;gap:8px">
                         <button data-preset="balanced" class="an-reset-btn" style="margin-top:0">Обычный старт</button>
                         <button data-preset="softMic" class="an-reset-btn" style="margin-top:0">Мягкий микрофон</button>
-                        <button data-preset="fast" class="an-reset-btn" style="margin-top:0">Быстрый авто-скип</button>
+                        <button data-preset="fast" class="an-reset-btn" style="margin-top:0">Быстрый старт</button>
                         <button data-preset="private" class="an-reset-btn" style="margin-top:0">Приватный режим</button>
                         <button data-preset="skip" class="an-reset-btn" style="margin-top:0">Оставить как есть</button>
                     </div>
