@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      6.8
+// @version      6.9
 // @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "6.8";
+  const VERSION = "6.9";
   const STORAGE_KEY = "AutoNektomeSettings_v4";
   const MIN_CONVERSATION_SECONDS = 3;
   const DRISNYA_PRANK_INTERVAL_MS = 2 * 60 * 1000;
@@ -519,12 +519,37 @@
     sourceNode: null,
     destNode: null,
     gainNode: null,
-    nodes: { pitch: null, comp: null, filter: null, loopGain: null, lag: null },
+    nodes: {
+      pitch: null,
+      comp: null,
+      filter: null,
+      loopGain: null,
+      loopMerger: null,
+      lag: null,
+    },
     previewStream: null,
     activeStream: null,
     rawStream: null,
     isProcessing: false,
     callId: 0, // Уникальный ID звонка для отслеживания
+
+    safeDisconnect(node) {
+      if (!node) return;
+      try {
+        node.disconnect();
+      } catch (e) {}
+    },
+
+    resetNodes() {
+      this.nodes = {
+        pitch: null,
+        comp: null,
+        filter: null,
+        loopGain: null,
+        loopMerger: null,
+        lag: null,
+      };
+    },
 
     async getContext() {
       if (!this.ctx) {
@@ -611,29 +636,16 @@
 
     // Полная очистка перед новым звонком
     cleanup() {
-      const safeDisconnect = (node) => {
-        if (node)
-          try {
-            node.disconnect();
-          } catch (e) {}
-      };
-
-      safeDisconnect(this.sourceNode);
-      safeDisconnect(this.gainNode);
-      safeDisconnect(this.destNode);
-      Object.values(this.nodes).forEach(safeDisconnect);
+      this.safeDisconnect(this.sourceNode);
+      this.safeDisconnect(this.gainNode);
+      this.safeDisconnect(this.destNode);
+      Object.values(this.nodes).forEach((node) => this.safeDisconnect(node));
 
       // Обнуляем ВСЕ узлы — filter/comp пересоздаются для надёжности в Firefox
       this.sourceNode = null;
       this.destNode = null;
       this.gainNode = null;
-      this.nodes = {
-        pitch: null,
-        comp: null,
-        filter: null,
-        loopGain: null,
-        lag: null,
-      };
+      this.resetNodes();
       this.rawStream = null;
       this.activeStream = null;
 
@@ -692,82 +704,174 @@
         return;
       }
 
-      // Безопасное отключение
-      const safeDisconnect = (node) => {
-        if (node)
-          try {
-            node.disconnect();
-          } catch (e) {}
-      };
-
-      safeDisconnect(this.sourceNode);
-      safeDisconnect(this.gainNode);
-      if (this.nodes.pitch) safeDisconnect(this.nodes.pitch);
-      if (this.nodes.filter) safeDisconnect(this.nodes.filter);
-      if (this.nodes.comp) safeDisconnect(this.nodes.comp);
-      if (this.nodes.lag) safeDisconnect(this.nodes.lag);
-      if (this.nodes.loopGain) safeDisconnect(this.nodes.loopGain);
-
-      let currentNode = this.sourceNode;
-
-      // Студийный звук
-      if (settings.voiceEnhance) {
-        if (!this.nodes.filter) {
-          this.nodes.filter = ctx.createBiquadFilter();
-          this.nodes.filter.type = "highpass";
-          this.nodes.filter.frequency.value = 80;
-        }
-        if (!this.nodes.comp) {
-          this.nodes.comp = ctx.createDynamicsCompressor();
-          this.nodes.comp.threshold.value = -24;
-          this.nodes.comp.knee.value = 30;
-          this.nodes.comp.ratio.value = 12;
-          this.nodes.comp.attack.value = 0.003;
-          this.nodes.comp.release.value = 0.25;
-        }
-        currentNode.connect(this.nodes.filter);
-        this.nodes.filter.connect(this.nodes.comp);
-        currentNode = this.nodes.comp;
+      try {
+        this.disconnectAudioGraph();
+        let currentNode = this.sourceNode;
+        currentNode = this.applyVoiceEnhance(ctx, currentNode);
+        currentNode = this.applyVoicePitch(ctx, currentNode);
+        currentNode = this.applyLagEffect(ctx, currentNode);
+        this.connectOutput(currentNode);
+        this.connectLoopbackMonitor(ctx, currentNode);
+        Utils.log(`Audio chain rebuilt for call #${this.callId}`, "success");
+      } finally {
+        this.isProcessing = false;
       }
+    },
 
-      // Изменение голоса
-      if (settings.voicePitch && this.workletLoaded) {
-        try {
-          this.nodes.pitch = new AudioWorkletNode(ctx, "pitch-shift-processor");
-          this.nodes.pitch.port.postMessage(settings.pitchLevel + 0.5);
-          currentNode.connect(this.nodes.pitch);
-          currentNode = this.nodes.pitch;
-        } catch (e) {
-          Utils.log("Pitch error: " + e.message, "error");
-        }
+    disconnectAudioGraph() {
+      this.safeDisconnect(this.sourceNode);
+      this.safeDisconnect(this.gainNode);
+      Object.values(this.nodes).forEach((node) => this.safeDisconnect(node));
+      this.resetNodes();
+    },
+
+    applyVoiceEnhance(ctx, inputNode) {
+      if (!settings.voiceEnhance) return inputNode;
+      this.nodes.filter = ctx.createBiquadFilter();
+      this.nodes.filter.type = "highpass";
+      this.nodes.filter.frequency.value = 80;
+
+      this.nodes.comp = ctx.createDynamicsCompressor();
+      this.nodes.comp.threshold.value = -24;
+      this.nodes.comp.knee.value = 30;
+      this.nodes.comp.ratio.value = 12;
+      this.nodes.comp.attack.value = 0.003;
+      this.nodes.comp.release.value = 0.25;
+
+      inputNode.connect(this.nodes.filter);
+      this.nodes.filter.connect(this.nodes.comp);
+      return this.nodes.comp;
+    },
+
+    applyVoicePitch(ctx, inputNode) {
+      if (!settings.voicePitch || !this.workletLoaded) return inputNode;
+      try {
+        this.nodes.pitch = new AudioWorkletNode(ctx, "pitch-shift-processor");
+        this.nodes.pitch.port.postMessage(settings.pitchLevel + 0.5);
+        inputNode.connect(this.nodes.pitch);
+        return this.nodes.pitch;
+      } catch (e) {
+        Utils.log("Pitch error: " + e.message, "error");
+        return inputNode;
       }
+    },
 
-      // Лаги голоса
-      if (settings.lagEnabled && this.workletLoaded) {
-        try {
-          this.nodes.lag = new AudioWorkletNode(ctx, "lag-processor");
-          this.nodes.lag.port.postMessage(settings.lagIntensity);
-          currentNode.connect(this.nodes.lag);
-          currentNode = this.nodes.lag;
-        } catch (e) {
-          Utils.log("Lag error: " + e.message, "error");
-        }
+    applyLagEffect(ctx, inputNode) {
+      if (!settings.lagEnabled || !this.workletLoaded) return inputNode;
+      try {
+        this.nodes.lag = new AudioWorkletNode(ctx, "lag-processor");
+        this.nodes.lag.port.postMessage(settings.lagIntensity);
+        inputNode.connect(this.nodes.lag);
+        return this.nodes.lag;
+      } catch (e) {
+        Utils.log("Lag error: " + e.message, "error");
+        return inputNode;
       }
+    },
 
-      // Финальное подключение к destination
-      currentNode.connect(this.gainNode);
+    connectOutput(inputNode) {
+      inputNode.connect(this.gainNode);
       this.gainNode.connect(this.destNode);
+    },
 
-      // Самопрослушивание
-      if (settings.enableLoopback) {
-        if (!this.nodes.loopGain) this.nodes.loopGain = ctx.createGain();
-        this.nodes.loopGain.gain.value = settings.gainValue;
-        currentNode.connect(this.nodes.loopGain);
-        this.nodes.loopGain.connect(ctx.destination);
+    connectLoopbackMonitor(ctx, inputNode) {
+      if (!settings.enableLoopback) return;
+      this.nodes.loopGain = ctx.createGain();
+      this.nodes.loopGain.gain.value = settings.gainValue;
+      this.nodes.loopMerger = ctx.createChannelMerger(2);
+
+      try {
+        this.nodes.loopGain.channelCount = 1;
+        this.nodes.loopGain.channelCountMode = "explicit";
+        this.nodes.loopGain.channelInterpretation = "speakers";
+      } catch (e) {}
+
+      inputNode.connect(this.nodes.loopGain);
+      this.nodes.loopGain.connect(this.nodes.loopMerger, 0, 0);
+      this.nodes.loopGain.connect(this.nodes.loopMerger, 0, 1);
+      this.nodes.loopMerger.connect(ctx.destination);
+    },
+
+    buildAudioConstraints(audioConstraints = true) {
+      const processingConstraints = {
+        echoCancellation: { exact: false },
+        autoGainControl: { exact: false },
+        noiseSuppression: settings.noiseSuppression,
+      };
+      return typeof audioConstraints === "object"
+        ? { ...audioConstraints, ...processingConstraints }
+        : processingConstraints;
+    },
+
+    async setLoopbackEnabled(enabled) {
+      settings.enableLoopback = enabled;
+      Settings.save();
+
+      if (enabled && !this.activeStream) {
+        await this.startPreview();
+        return;
       }
 
-      this.isProcessing = false;
-      Utils.log(`Audio chain rebuilt for call #${this.callId}`, "success");
+      if (!enabled && this.previewStream && this.activeStream === this.previewStream) {
+        this.stopPreview();
+        return;
+      }
+
+      await this.rebuildChain();
+    },
+
+    async setVoiceEnhanceEnabled(enabled) {
+      settings.voiceEnhance = enabled;
+      Settings.save();
+      await this.rebuildChain();
+    },
+
+    async setVoicePitchEnabled(enabled) {
+      settings.voicePitch = enabled;
+      Settings.save();
+
+      if (enabled) {
+        const isWorkletReady = await this.initWorklet();
+        if (!isWorkletReady) {
+          settings.voicePitch = false;
+          Settings.save();
+          UI.updateToggle("voicePitch", false);
+          return;
+        }
+      }
+
+      await this.rebuildChain();
+    },
+
+    async setNoiseSuppressionEnabled(enabled) {
+      settings.noiseSuppression = enabled;
+      Settings.save();
+      await this.applyNoiseSuppressionToTracks(enabled);
+    },
+
+    async applyNoiseSuppressionToTracks(enabled) {
+      const supported =
+        navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression;
+      if (!supported) {
+        Diagnostics.setIssue(
+          "noiseSuppression",
+          "Браузер не поддерживает переключение шумоподавления на активном треке.",
+        );
+        return;
+      }
+
+      const tracks = new Set();
+      [this.rawStream, this.previewStream].forEach((stream) => {
+        stream?.getAudioTracks?.().forEach((track) => tracks.add(track));
+      });
+
+      for (const track of tracks) {
+        try {
+          await track.applyConstraints({ noiseSuppression: enabled });
+        } catch (e) {
+          Utils.log("Noise suppression error: " + e.message, "warn");
+        }
+      }
     },
 
     async startPreview() {
@@ -782,11 +886,7 @@
           MediaHook.original ||
           navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
         const constraints = {
-          audio: {
-            echoCancellation: { exact: false },
-            autoGainControl: { exact: false },
-            noiseSuppression: settings.noiseSuppression,
-          },
+          audio: this.buildAudioConstraints(true),
         };
         const rawStream = await fn(constraints);
         this.previewStream = rawStream;
