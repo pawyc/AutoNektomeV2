@@ -1,6 +1,6 @@
 # AutoNektome V2
 
-![Версия](https://img.shields.io/badge/версия-6.4-brightgreen)
+![Версия](https://img.shields.io/badge/версия-6.5-brightgreen)
 ![Лицензия](https://img.shields.io/badge/лицензия-MIT-blue)
 ![Платформа](https://img.shields.io/badge/Chromium%20%2B%20Tampermonkey-userscript-yellowgreen)
 

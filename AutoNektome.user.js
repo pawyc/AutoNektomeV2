@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      6.4
+// @version      6.5
 // @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер, авто-скип и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "6.4";
+  const VERSION = "6.5";
   const STORAGE_KEY = "AutoNektomeSettings_v4";
   const MIN_CONVERSATION_SECONDS = 3;
   const DRISNYA_PRANK_INTERVAL_MS = 2 * 60 * 1000;
@@ -279,6 +279,11 @@
         normalizedTranscript.startsWith(`${normalizedCommand} `) ||
         normalizedTranscript.endsWith(` ${normalizedCommand}`)
       );
+    },
+    getErrorMessage(error) {
+      if (!error) return "Unknown startup error";
+      if (error instanceof Error) return error.message || error.name;
+      return String(error);
     },
   };
 
@@ -1530,6 +1535,14 @@
   const MediaHook = {
     original: null,
     init() {
+      if (this.original) return;
+      if (!navigator.mediaDevices?.getUserMedia) {
+        Diagnostics.setIssue(
+          "media",
+          "Браузер не предоставляет navigator.mediaDevices.getUserMedia.",
+        );
+        return;
+      }
       this.original = navigator.mediaDevices.getUserMedia.bind(
         navigator.mediaDevices,
       );
@@ -2399,14 +2412,51 @@
 
       this.root.append(head, body);
       document.body.appendChild(this.root);
-      if (settings.panelPosition && window.innerWidth > 600) {
-        this.root.style.left = `${settings.panelPosition.left}px`;
-        this.root.style.top = `${settings.panelPosition.top}px`;
-        this.root.style.right = "auto";
-      }
+      this.applyPanelPosition();
       this.updateButtons();
       this.updateDrisnyaButton();
       this.refreshBasic();
+      requestAnimationFrame(() => this.ensureVisible());
+    },
+
+    applyPanelPosition() {
+      if (!this.root || !settings.panelPosition || window.innerWidth <= 600)
+        return;
+      const left = Number(settings.panelPosition.left);
+      const top = Number(settings.panelPosition.top);
+      if (!Number.isFinite(left) || !Number.isFinite(top)) {
+        settings.panelPosition = null;
+        Settings.save();
+        return;
+      }
+      this.root.style.left = `${left}px`;
+      this.root.style.top = `${top}px`;
+      this.root.style.right = "auto";
+    },
+
+    ensureVisible() {
+      if (!this.root || window.innerWidth <= 600) return;
+      const rect = this.root.getBoundingClientRect();
+      const padding = 12;
+      const maxLeft = Math.max(padding, window.innerWidth - rect.width - padding);
+      const maxTop = Math.max(padding, window.innerHeight - rect.height - padding);
+      const nextLeft = Math.min(Math.max(rect.left, padding), maxLeft);
+      const nextTop = Math.min(Math.max(rect.top, padding), maxTop);
+      const isOutside =
+        rect.right < padding ||
+        rect.bottom < padding ||
+        rect.left > window.innerWidth - padding ||
+        rect.top > window.innerHeight - padding;
+      if (!isOutside && nextLeft === rect.left && nextTop === rect.top) return;
+
+      this.root.style.left = `${Math.round(nextLeft)}px`;
+      this.root.style.top = `${Math.round(nextTop)}px`;
+      this.root.style.right = "auto";
+      settings.panelPosition = {
+        left: Math.round(nextLeft),
+        top: Math.round(nextTop),
+      };
+      Settings.save();
     },
 
     injectStyles() {
@@ -2416,7 +2466,7 @@
                 @keyframes anPulse{0%,100%{opacity:1}50%{opacity:0.4}}
                 @keyframes anBlink{0%,100%{opacity:1}50%{opacity:0.3}}
 
-                #an-root{position:fixed;top:20px;right:20px;z-index:10000;width:320px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:rgba(17,20,24,0.96);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.08);border-radius:14px;color:#e6edf3;box-shadow:0 8px 32px rgba(0,0,0,0.4);font-size:13px;overflow:hidden}
+                #an-root{position:fixed;top:20px;right:20px;z-index:2147483647;width:320px;max-width:calc(100vw - 24px);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:rgba(17,20,24,0.96);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.08);border-radius:14px;color:#e6edf3;box-shadow:0 8px 32px rgba(0,0,0,0.4);font-size:13px;overflow:hidden}
                 @media(max-width:600px){#an-root{top:auto;bottom:0;right:0;left:0;width:100%;border-radius:14px 14px 0 0;max-height:85vh}}
                 .an-head{padding:12px 14px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;border-bottom:1px solid rgba(255,255,255,0.06)}
                 .an-head-left{display:flex;align-items:center;gap:8px}
@@ -2715,59 +2765,101 @@
   // ==========================================
   // ИНИЦИАЛИЗАЦИЯ
   // ==========================================
-  function init() {
-    Utils.log("Запуск...", "info");
-    const restoredSettings = Settings.load();
-    const initialVoiceSupport = BrowserSupport.getVoiceControlSupport();
-    if (settings.voiceControl && !initialVoiceSupport.supported) {
-      settings.voiceControl = false;
-      Settings.save();
+  function runStartupStep(name, fn) {
+    try {
+      return fn();
+    } catch (error) {
+      const message = `${name}: ${Utils.getErrorMessage(error)}`;
+      console.error(`[AutoNektome v${VERSION}] ${message}`, error);
+      Diagnostics.setIssue(`startup-${name}`, message);
+      return null;
     }
-    Sounds.init();
-    if (settings.enableIpChecker) IPChecker.init();
-    else IPChecker.disable();
-    MediaHook.init();
-    Hotkeys.init();
+  }
 
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) {
-        State.wasHidden = true;
-        return;
+  function showStartupError(error) {
+    const message = Utils.getErrorMessage(error);
+    console.error(`[AutoNektome v${VERSION}] startup failed`, error);
+    if (document.getElementById("an-root")) {
+      Toast.show(`AutoNektome: ${message}`, "error", 6000);
+      return;
+    }
+
+    const box = document.createElement("div");
+    box.id = "an-root";
+    box.style.cssText =
+      "position:fixed;top:20px;right:20px;z-index:2147483647;width:320px;max-width:calc(100vw - 24px);background:#111418;color:#e6edf3;border:1px solid rgba(248,81,73,.5);border-radius:12px;padding:14px;font:13px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;box-shadow:0 8px 32px rgba(0,0,0,.45)";
+    box.innerHTML = `
+      <div style="font-weight:700;color:#f85149;margin-bottom:8px">AutoNektome не запустился</div>
+      <div style="line-height:1.45;color:#c9d1d9">${message}</div>
+      <div style="margin-top:10px;color:#7d8590;font-size:11px">Откройте консоль браузера и пришлите ошибку, если сообщение выше недостаточно понятно.</div>
+    `;
+    document.body.appendChild(box);
+  }
+
+  function init() {
+    try {
+      Utils.log("Запуск...", "info");
+      const restoredSettings = Boolean(
+        runStartupStep("settings", () => Settings.load()),
+      );
+      const initialVoiceSupport = BrowserSupport.getVoiceControlSupport();
+      if (settings.voiceControl && !initialVoiceSupport.supported) {
+        settings.voiceControl = false;
+        Settings.save();
       }
 
-      if (!State.wasHidden) return;
-      State.wasHidden = false;
-      if (!State.didInitComplete) return;
-      Sounds.play("welcomeBack");
-    });
+      runStartupStep("sounds", () => Sounds.init());
+      UI.create();
 
-    const unlock = () => {
-      AudioEngine.getContext();
-      document.removeEventListener("click", unlock, true);
-    };
-    document.addEventListener("click", unlock, true);
+      runStartupStep("ip-checker", () => {
+        if (settings.enableIpChecker) IPChecker.init();
+        else IPChecker.disable();
+      });
+      runStartupStep("media-hook", () => MediaHook.init());
+      runStartupStep("hotkeys", () => Hotkeys.init());
 
-    UI.create();
-    Themes.apply(settings.selectedTheme);
-    Particles.init();
-    Observer.init();
-    Diagnostics.runSelfCheck();
-    UI.refreshBasic();
-    Sounds.syncDrisnyaLoop();
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) {
+          State.wasHidden = true;
+          return;
+        }
 
-    if (settings.voiceControl) VoiceControl.toggle(true);
-    Onboarding.maybeShow();
-    if (settings.drisnyaMode) {
-      Sounds.clearQueue(true);
-      Sounds.play("drisnyaEnable");
-    } else {
-      if (restoredSettings) Sounds.play("restoredConfig");
-      Sounds.play("startupSuccess");
+        if (!State.wasHidden) return;
+        State.wasHidden = false;
+        if (!State.didInitComplete) return;
+        Sounds.play("startupSuccess");
+      });
+
+      const unlock = () => {
+        AudioEngine.getContext();
+        document.removeEventListener("click", unlock, true);
+      };
+      document.addEventListener("click", unlock, true);
+
+      runStartupStep("theme", () => Themes.apply(settings.selectedTheme));
+      runStartupStep("particles", () => Particles.init());
+      runStartupStep("observer", () => Observer.init());
+      runStartupStep("diagnostics", () => Diagnostics.runSelfCheck());
+      UI.refreshBasic();
+      Sounds.syncDrisnyaLoop();
+
+      if (settings.voiceControl)
+        runStartupStep("voice-control", () => VoiceControl.toggle(true));
+      runStartupStep("onboarding", () => Onboarding.maybeShow());
+      if (settings.drisnyaMode) {
+        Sounds.clearQueue(true);
+        Sounds.play("drisnyaEnable");
+      } else {
+        if (restoredSettings) Sounds.play("restoredConfig");
+        Sounds.play("startupSuccess");
+      }
+      State.didInitComplete = true;
+
+      Utils.log("Готов!", "success");
+      Toast.show(`AutoNektome v${VERSION}`, "success");
+    } catch (error) {
+      showStartupError(error);
     }
-    State.didInitComplete = true;
-
-    Utils.log("Готов!", "success");
-    Toast.show(`AutoNektome v${VERSION}`, "success");
   }
 
   if (document.readyState === "loading")
