@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      6.11
+// @version      6.12
 // @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "6.11";
+  const VERSION = "6.12";
   const STORAGE_KEY = "AutoNektomeSettings_v4";
   const MIN_CONVERSATION_SECONDS = 3;
   const DRISNYA_PRANK_MIN_DELAY_MS = 5 * 1000;
@@ -492,6 +492,9 @@
   const DrisnyaMode = {
     styleId: "an-drisnya-style",
     activeClass: "an-drisnya-active",
+    hiddenColorSchemeNodes: new Set(),
+    colorSchemeObserver: null,
+    colorSchemeTimer: null,
     ensureStyle() {
       if (document.getElementById(this.styleId)) return;
       const style = document.createElement("style");
@@ -508,20 +511,89 @@
         body.${this.activeClass} :where(h1,h2,h3,[class*="title"]){color:#ffb46d!important;text-shadow:0 2px 0 rgba(54,28,12,0.95),0 0 18px rgba(255,142,61,0.28)!important}
         body.${this.activeClass} :where(h1,h2,h3,[class*="title"])::before{content:"💩 ";filter:drop-shadow(0 2px 3px rgba(0,0,0,0.55))}
         body.${this.activeClass} :where(label,p,span,li){text-shadow:0 1px 1px rgba(0,0,0,0.45)}
-        body.${this.activeClass} :where(button,.btn,a[class*="btn"],input[type="button"],input[type="submit"]){border-radius:14px!important;border:1px solid rgba(255,187,99,0.35)!important;background:linear-gradient(180deg,#8b5328,#5c3218)!important;color:#fff3df!important;box-shadow:inset 0 1px 0 rgba(255,255,255,0.18),0 5px 0 #2f180c,0 12px 24px rgba(38,17,7,0.35)!important;transition:transform .16s ease,filter .16s ease,box-shadow .16s ease!important}
-        body.${this.activeClass} :where(button,.btn,a[class*="btn"],input[type="button"],input[type="submit"]):hover{animation:anDrisnyaWiggle .34s ease;filter:saturate(1.15) brightness(1.08)!important;transform:translateY(-1px) rotate(-0.5deg)!important}
-        body.${this.activeClass} :where(button.active,.btn.active,.active,button[aria-pressed="true"],input:checked+label){background:linear-gradient(180deg,#d89142,#7a421d)!important;color:#1d0f08!important;box-shadow:inset 0 1px 0 rgba(255,255,255,0.35),0 4px 0 #3a1d0d,0 0 22px rgba(234,154,67,0.28)!important}
+        body.${this.activeClass} :where(button,.btn,a[class*="btn"],[role="button"],input[type="button"],input[type="submit"]){position:relative!important;border-radius:14px!important;border:1px solid rgba(255,187,99,0.3)!important;background:linear-gradient(180deg,#5b331a,#351c0e)!important;color:#ffe7c3!important;box-shadow:inset 0 1px 0 rgba(255,255,255,0.1),0 4px 0 #1d0d06,0 10px 20px rgba(22,9,4,0.35)!important;cursor:pointer!important;opacity:.86!important;transition:transform .16s ease,filter .16s ease,box-shadow .16s ease,background .16s ease,opacity .16s ease!important}
+        body.${this.activeClass} :where(button,.btn,a[class*="btn"],[role="button"],input[type="button"],input[type="submit"]):hover{animation:anDrisnyaWiggle .34s ease;filter:saturate(1.2) brightness(1.1)!important;transform:translateY(-1px) rotate(-0.5deg)!important;opacity:1!important}
+        body.${this.activeClass} :where(button,.btn,a[class*="btn"],[role="button"],input[type="button"],input[type="submit"]):focus-visible{outline:3px solid rgba(255,210,109,.78)!important;outline-offset:2px!important}
+        body.${this.activeClass} :where(button.active,.btn.active,button.selected,.btn.selected,button[class*="active"],a[class*="active"],button[class*="selected"],a[class*="selected"],button[aria-pressed="true"],button[aria-selected="true"],[role="button"][aria-pressed="true"],[role="button"][aria-selected="true"],input:checked+label){background:linear-gradient(180deg,#ffd26d,#b66b28 54%,#6d3614)!important;color:#1c0d05!important;border-color:rgba(255,225,142,.92)!important;text-shadow:0 1px 0 rgba(255,235,185,.38)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,0.45),0 4px 0 #3a1d0d,0 0 0 2px rgba(255,207,107,.22),0 0 26px rgba(255,178,77,0.38)!important;opacity:1!important}
+        body.${this.activeClass} :where(button.active,.btn.active,button.selected,.btn.selected,button[class*="active"],a[class*="active"],button[class*="selected"],a[class*="selected"],button[aria-pressed="true"],button[aria-selected="true"],[role="button"][aria-pressed="true"],[role="button"][aria-selected="true"],input:checked+label)::before{content:"✓ ";font-weight:900;color:#251007;text-shadow:none}
+        body.${this.activeClass} :where(button:disabled,.btn.disabled,[aria-disabled="true"]){filter:grayscale(.45)!important;opacity:.42!important;cursor:not-allowed!important;box-shadow:none!important}
+        body.${this.activeClass} [data-an-drisnya-hidden-color-scheme="1"]{display:none!important}
         body.${this.activeClass} :where(input,select,textarea){border-color:rgba(255,184,96,0.35)!important;background:rgba(39,23,14,0.88)!important;color:#ffe2bb!important}
         @keyframes anDrisnyaWiggle{0%,100%{transform:translateY(-1px) rotate(0deg)}25%{transform:translateY(-2px) rotate(-1.3deg)}50%{transform:translateY(0) rotate(1.2deg)}75%{transform:translateY(-1px) rotate(-.7deg)}}
       `;
       document.head.appendChild(style);
     },
+    normalizeText(value) {
+      return String(value || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+    },
+    isOwnUiNode(node) {
+      return Boolean(node?.closest?.("#an-root, #an-toast-container"));
+    },
+    getColorSchemeContainer(labelNode) {
+      let node = labelNode;
+      for (let depth = 0; node && node !== document.body && depth < 7; depth++) {
+        const controls = node.querySelectorAll?.(
+          'button,.btn,[role="button"],input[type="button"],input[type="radio"],input[type="submit"]',
+        );
+        if (controls && controls.length >= 2 && controls.length <= 5) return node;
+        node = node.parentElement;
+      }
+      return labelNode.parentElement || labelNode;
+    },
+    hideColorSchemeControls() {
+      const nodes = Array.from(document.body.querySelectorAll("*"));
+      nodes.forEach((node) => {
+        if (this.isOwnUiNode(node)) return;
+        const text = this.normalizeText(node.textContent);
+        if (text !== "цветовая схема:" && text !== "цветовая схема") return;
+        const container = this.getColorSchemeContainer(node);
+        if (!container || this.isOwnUiNode(container)) return;
+        container.dataset.anDrisnyaHiddenColorScheme = "1";
+        this.hiddenColorSchemeNodes.add(container);
+      });
+    },
+    restoreColorSchemeControls() {
+      this.hiddenColorSchemeNodes.forEach((node) => {
+        if (node?.dataset) delete node.dataset.anDrisnyaHiddenColorScheme;
+      });
+      this.hiddenColorSchemeNodes.clear();
+    },
+    startColorSchemeObserver() {
+      if (this.colorSchemeObserver || !window.MutationObserver) return;
+      this.colorSchemeObserver = new MutationObserver(() => {
+        clearTimeout(this.colorSchemeTimer);
+        this.colorSchemeTimer = setTimeout(() => this.hideColorSchemeControls(), 120);
+      });
+      this.colorSchemeObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+    },
+    stopColorSchemeObserver() {
+      if (this.colorSchemeObserver) {
+        this.colorSchemeObserver.disconnect();
+        this.colorSchemeObserver = null;
+      }
+      clearTimeout(this.colorSchemeTimer);
+      this.colorSchemeTimer = null;
+    },
     apply() {
       this.ensureStyle();
+      const isEnabled = Boolean(settings.drisnyaMode);
       document.body.classList.toggle(
         this.activeClass,
-        Boolean(settings.drisnyaMode),
+        isEnabled,
       );
+      if (isEnabled) {
+        this.hideColorSchemeControls();
+        this.startColorSchemeObserver();
+      } else {
+        this.stopColorSchemeObserver();
+        this.restoreColorSchemeControls();
+      }
     },
   };
 
