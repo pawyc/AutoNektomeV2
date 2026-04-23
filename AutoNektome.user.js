@@ -2454,8 +2454,12 @@
         "open",
         Boolean(settings.developerMode),
       );
-      if (settings.developerMode)
+      if (settings.developerMode) {
         this.showDeveloperTab(this.activeDeveloperTab || "history");
+      } else {
+        this.diagnosticsEl = null;
+        this.eventLogEl = null;
+      }
     },
 
     showDeveloperTab(tab) {
