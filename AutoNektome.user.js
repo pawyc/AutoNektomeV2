@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      6.6
+// @version      6.7
 // @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "6.6";
+  const VERSION = "6.7";
   const STORAGE_KEY = "AutoNektomeSettings_v4";
   const MIN_CONVERSATION_SECONDS = 3;
   const DRISNYA_PRANK_INTERVAL_MS = 2 * 60 * 1000;
@@ -283,6 +283,7 @@
     },
     getBrowserName() {
       const ua = navigator.userAgent || "";
+      if (navigator.brave?.isBrave) return "Brave";
       if (/Firefox/i.test(ua)) return "Firefox";
       if (/Edg/i.test(ua)) return "Edge";
       if (/Chrome|Chromium/i.test(ua)) return "Chrome";
@@ -292,6 +293,7 @@
     },
     getVoiceControlSupport() {
       const ctor = this.getSpeechRecognitionCtor();
+      const browserName = this.getBrowserName();
       const isSecureContextAvailable =
         typeof window.isSecureContext === "boolean"
           ? window.isSecureContext
@@ -303,6 +305,15 @@
           ctor: null,
           message:
             "Голосовое управление требует HTTPS-контекст и доступ к микрофону.",
+        };
+      }
+
+      if (browserName === "Brave") {
+        return {
+          supported: false,
+          ctor: null,
+          message:
+            "Brave не поддерживает браузерное распознавание речи Web Speech API. Для голосовых команд используйте Chrome или Edge.",
         };
       }
 
@@ -1244,8 +1255,11 @@
           return;
         }
         if (e.error === "network") {
+          const browserName = BrowserSupport.getBrowserName();
           this.disableWithMessage(
-            "Голосовое управление недоступно: Chrome/Brave не подключился к сервису распознавания речи.",
+            browserName === "Brave"
+              ? "Brave не поддерживает Web Speech API для голосовых команд. Откройте страницу в Chrome или Edge."
+              : "Голосовое управление недоступно: браузер не подключился к сервису распознавания речи.",
             "warning",
           );
           return;
