@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PawycMe (AutoNektome Refactored)
 // @namespace    http://tampermonkey.net/
-// @version      6.9
+// @version      6.10
 // @description  Автоматический переход, настройки звука, голосовое управление, IP-чекер и улучшенный UI для nekto.me audiochat
 // @author       @pawyc (Refactored)
 // @match        https://nekto.me/audiochat*
@@ -16,10 +16,13 @@
 (function () {
   "use strict";
 
-  const VERSION = "6.9";
+  const VERSION = "6.10";
   const STORAGE_KEY = "AutoNektomeSettings_v4";
   const MIN_CONVERSATION_SECONDS = 3;
-  const DRISNYA_PRANK_INTERVAL_MS = 2 * 60 * 1000;
+  const DRISNYA_PRANK_MIN_DELAY_MS = 5 * 1000;
+  const DRISNYA_PRANK_MAX_DELAY_MS = 2 * 60 * 1000;
+  const POOP_SQUASH_RADIUS = 30;
+  const POOP_SQUASH_MS = 650;
 
   // SVG Иконки (минималистичные)
   const ICONS = {
@@ -850,8 +853,9 @@
     },
 
     async applyNoiseSuppressionToTracks(enabled) {
-      const supported =
-        navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression;
+      const supportedConstraints =
+        navigator.mediaDevices?.getSupportedConstraints?.() || {};
+      const supported = supportedConstraints.noiseSuppression;
       if (!supported) {
         Diagnostics.setIssue(
           "noiseSuppression",
@@ -1212,26 +1216,44 @@
   };
 
   const DrisnyaPrank = {
-    intervalId: null,
+    timeoutId: null,
     bufferPromise: null,
+    scheduledConversationStartedAt: 0,
     shouldRun() {
       return (
         settings.drisnyaMode &&
         settings.soundsEnabled &&
-        State.isInConversation &&
-        !!AudioEngine.gainNode
+        State.isInConversation
       );
     },
+    getRandomDelay() {
+      const range = DRISNYA_PRANK_MAX_DELAY_MS - DRISNYA_PRANK_MIN_DELAY_MS;
+      return Math.round(DRISNYA_PRANK_MIN_DELAY_MS + Math.random() * range);
+    },
     start() {
-      if (this.intervalId || !this.shouldRun()) return;
-      this.intervalId = setInterval(() => {
-        this.playShot();
-      }, DRISNYA_PRANK_INTERVAL_MS);
+      const conversationStartedAt = State.conversationStartTime || Date.now();
+      if (
+        this.timeoutId ||
+        this.scheduledConversationStartedAt === conversationStartedAt ||
+        !this.shouldRun()
+      )
+        return;
+
+      this.scheduledConversationStartedAt = conversationStartedAt;
+      this.timeoutId = setTimeout(() => {
+        this.timeoutId = null;
+        if (!this.shouldRun()) return;
+        this.playShot().catch((error) => {
+          Utils.log(`Drisnya prank sound failed: ${error.message}`, "warn");
+        });
+      }, this.getRandomDelay());
     },
     stop() {
-      if (!this.intervalId) return;
-      clearInterval(this.intervalId);
-      this.intervalId = null;
+      if (this.timeoutId) {
+        clearTimeout(this.timeoutId);
+        this.timeoutId = null;
+      }
+      if (!State.isInConversation) this.scheduledConversationStartedAt = 0;
     },
     sync() {
       if (this.shouldRun()) this.start();
@@ -1754,7 +1776,9 @@
       document.body.prepend(this.canvas);
       this.ctx = this.canvas.getContext("2d");
       this._resizeHandler = () => this.resize();
+      this._clickHandler = (event) => this.handleClick(event);
       window.addEventListener("resize", this._resizeHandler);
+      document.addEventListener("click", this._clickHandler, true);
       this.resize();
       if (settings.particlesEnabled) this.toggle(true);
     },
@@ -1780,21 +1804,65 @@
         }
       }
     },
+    createParticle() {
+      return {
+        x: Math.random() * this.canvas.width,
+        y: Math.random() * this.canvas.height,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: (Math.random() - 0.5) * 0.3,
+        size: 22 + Math.random() * 10,
+        squashedUntil: 0,
+      };
+    },
     createParticles() {
       this.parts = [];
       const count = window.innerWidth < 600 ? 20 : 40;
-      for (let i = 0; i < count; i++)
-        this.parts.push({
-          x: Math.random() * this.canvas.width,
-          y: Math.random() * this.canvas.height,
-          vx: (Math.random() - 0.5) * 0.3,
-          vy: (Math.random() - 0.5) * 0.3,
-        });
+      for (let i = 0; i < count; i++) this.parts.push(this.createParticle());
+    },
+    findClickedPoop(x, y) {
+      for (let i = this.parts.length - 1; i >= 0; i--) {
+        const p = this.parts[i];
+        if (p.squashedUntil) continue;
+        const radius = Math.max(POOP_SQUASH_RADIUS, (p.size || 24) * 0.8);
+        const dx = p.x - x;
+        const dy = p.y - y;
+        if (dx * dx + dy * dy <= radius * radius) return p;
+      }
+      return null;
+    },
+    handleClick(event) {
+      if (!this.enabled || !settings.drisnyaMode || !this.canvas) return;
+      const poop = this.findClickedPoop(event.clientX, event.clientY);
+      if (!poop) return;
+      poop.squashedUntil = Date.now() + POOP_SQUASH_MS;
+      poop.vx = 0;
+      poop.vy = 0;
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    moveParticle(p, w, h) {
+      p.x += p.vx;
+      p.y += p.vy;
+      if (p.x < 0 || p.x > w) p.vx *= -1;
+      if (p.y < 0 || p.y > h) p.vy *= -1;
+    },
+    drawPoop(p) {
+      this.ctx.font = `${Math.round(p.size || 24)}px Arial`;
+      this.ctx.fillText("\uD83D\uDCA9", p.x, p.y);
+    },
+    drawSquashedPoop(p) {
+      this.ctx.save();
+      this.ctx.translate(p.x, p.y + 6);
+      this.ctx.scale(1.6, 0.35);
+      this.ctx.font = `${Math.round((p.size || 24) * 1.2)}px Arial`;
+      this.ctx.fillText("\uD83D\uDCA9", 0, 0);
+      this.ctx.restore();
     },
     loop() {
       if (!this.enabled) return;
       const w = this.canvas.width,
         h = this.canvas.height;
+      const now = Date.now();
       this.ctx.clearRect(0, 0, w, h);
       if (settings.drisnyaMode) {
         this.ctx.font = "24px Arial";
@@ -1805,13 +1873,16 @@
       }
       for (let i = 0; i < this.parts.length; i++) {
         const p = this.parts[i];
-        p.x += p.vx;
-        p.y += p.vy;
-        if (p.x < 0 || p.x > w) p.vx *= -1;
-        if (p.y < 0 || p.y > h) p.vy *= -1;
         if (settings.drisnyaMode) {
-          this.ctx.fillText("\uD83D\uDCA9", p.x, p.y);
+          if (p.squashedUntil) {
+            if (now >= p.squashedUntil) this.parts[i] = this.createParticle();
+            else this.drawSquashedPoop(p);
+            continue;
+          }
+          this.moveParticle(p, w, h);
+          this.drawPoop(p);
         } else {
+          this.moveParticle(p, w, h);
           this.ctx.beginPath();
           this.ctx.arc(p.x, p.y, 1.5, 0, Math.PI * 2);
           this.ctx.fill();
